@@ -1,0 +1,11 @@
+feat: complete frontend overhaul for demo
+
+- Dark/light mode toggle with localStorage persistence
+- New Live Fraud Analyzer page with SVG risk gauge and PCA feature inputs
+- Toast notification system for real-time fraud alerts
+- CSV export for transactions
+- Sortable and filterable transactions table with summary cards
+- Rich dashboard with Area, Bar, Pie charts and Fraud Alerts feed
+- Mock API fallback so app works without backend
+- Demo Account login bypass for presentations
+- Password strength bar on Register page
