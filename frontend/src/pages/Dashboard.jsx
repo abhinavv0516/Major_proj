@@ -13,8 +13,10 @@ import {
 const fmt = (n) => n?.toLocaleString() ?? '—';
 const pct = (n) => n != null ? `${Number(n).toFixed(2)}%` : '—';
 
+import GlassyCard from '../components/GlassyCard';
+
 const StatCard = ({ icon: Icon, label, value, sub, color, trend, trendVal }) => (
-  <div style={{
+  <GlassyCard style={{
     background: 'var(--bg-card)', border: '1px solid var(--border)',
     borderRadius: '16px', padding: '20px 22px',
     backdropFilter: 'blur(12px)', position: 'relative', overflow: 'hidden',
@@ -41,7 +43,7 @@ const StatCard = ({ icon: Icon, label, value, sub, color, trend, trendVal }) => 
         <Icon size={20} color={color} />
       </div>
     </div>
-  </div>
+  </GlassyCard>
 );
 
 const MetricBar = ({ label, value, color, description }) => (

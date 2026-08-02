@@ -16,8 +16,8 @@ app.add_middleware(
 
 # Initialize DB
 @app.on_event("startup")
-def on_startup():
-    init_db()
+async def on_startup():
+    await init_db()
 
 # Include routers
 app.include_router(auth.router)

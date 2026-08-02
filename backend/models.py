@@ -1,57 +1,84 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey
-from sqlalchemy.orm import declarative_base, relationship
-from datetime import datetime
-
-Base = declarative_base()
+import uuid
+from datetime import datetime, timezone
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, JSON
+from sqlalchemy.orm import relationship
+from backend.database import Base
 
 class User(Base):
     __tablename__ = "users"
-
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     full_name = Column(String)
-    role = Column(String, default="analyst") # admin, analyst
+    role = Column(String, default="analyst")
     is_active = Column(Boolean, default=True)
 
 class Transaction(Base):
     __tablename__ = "transactions"
-
     id = Column(Integer, primary_key=True, index=True)
-    time = Column(Float)
-    amount = Column(Float)
+    transaction_uuid = Column(String, unique=True, index=True, default=lambda: str(uuid.uuid4()))
+    submitted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    status = Column(String, default="queued") # queued, scored, error
+    raw_payload = Column(JSON)
     
-    # Store V1 to V28 as a JSON string or individual columns. 
-    # For simplicity and DB agnostic, let's use individual columns
-    v1 = Column(Float)
-    v2 = Column(Float)
-    v3 = Column(Float)
-    v4 = Column(Float)
-    v5 = Column(Float)
-    v6 = Column(Float)
-    v7 = Column(Float)
-    v8 = Column(Float)
-    v9 = Column(Float)
-    v10 = Column(Float)
-    v11 = Column(Float)
-    v12 = Column(Float)
-    v13 = Column(Float)
-    v14 = Column(Float)
-    v15 = Column(Float)
-    v16 = Column(Float)
-    v17 = Column(Float)
-    v18 = Column(Float)
-    v19 = Column(Float)
-    v20 = Column(Float)
-    v21 = Column(Float)
-    v22 = Column(Float)
-    v23 = Column(Float)
-    v24 = Column(Float)
-    v25 = Column(Float)
-    v26 = Column(Float)
-    v27 = Column(Float)
-    v28 = Column(Float)
+    scores = relationship("Score", back_populates="transaction", cascade="all, delete-orphan")
+    reviews = relationship("Review", back_populates="transaction", cascade="all, delete-orphan")
+    audit_logs = relationship("AuditLog", back_populates="transaction", cascade="all, delete-orphan")
 
-    is_fraud = Column(Boolean, default=False)
-    fraud_probability = Column(Float, default=0.0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+class Score(Base):
+    __tablename__ = "scores"
+    id = Column(Integer, primary_key=True, index=True)
+    transaction_id = Column(Integer, ForeignKey("transactions.id"))
+    model_version = Column(String)
+    fraud_probability = Column(Float)
+    risk_level = Column(String) # low, medium, high
+    prediction = Column(Boolean)
+    processing_time = Column(Float)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    
+    transaction = relationship("Transaction", back_populates="scores")
+    explanation = relationship("Explanation", back_populates="score", uselist=False, cascade="all, delete-orphan")
+
+class Explanation(Base):
+    __tablename__ = "explanations"
+    id = Column(Integer, primary_key=True, index=True)
+    score_id = Column(Integer, ForeignKey("scores.id"))
+    top_features = Column(JSON)
+    shap_values = Column(JSON)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    
+    score = relationship("Score", back_populates="explanation")
+
+class MLModel(Base):
+    __tablename__ = "models"
+    id = Column(Integer, primary_key=True, index=True)
+    version = Column(String, unique=True, index=True)
+    algorithm = Column(String)
+    accuracy = Column(Float)
+    precision = Column(Float)
+    recall = Column(Float)
+    f1_score = Column(Float)
+    roc_auc = Column(Float)
+
+class Review(Base):
+    __tablename__ = "reviews"
+    id = Column(Integer, primary_key=True, index=True)
+    transaction_id = Column(Integer, ForeignKey("transactions.id"))
+    review_status = Column(String)
+    review_notes = Column(String)
+    reviewed_by = Column(Integer, ForeignKey("users.id"))
+    reviewed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    
+    transaction = relationship("Transaction", back_populates="reviews")
+    reviewer = relationship("User")
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    transaction_id = Column(Integer, ForeignKey("transactions.id"))
+    action = Column(String)
+    actor = Column(String)
+    details = Column(JSON)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    
+    transaction = relationship("Transaction", back_populates="audit_logs")
