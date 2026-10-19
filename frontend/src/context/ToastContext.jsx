@@ -11,7 +11,6 @@ const icons = {
 };
 
 const borderColor = { fraud: '#f43f5e', success: '#10b981', error: '#f59e0b', info: '#6366f1' };
-const bgColor = { fraud: 'rgba(244,63,94,0.12)', success: 'rgba(16,185,129,0.10)', error: 'rgba(245,158,11,0.12)', info: 'rgba(99,102,241,0.12)' };
 
 let _id = 0;
 
@@ -68,4 +67,5 @@ export const ToastProvider = ({ children }) => {
   );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useToast = () => useContext(ToastContext);

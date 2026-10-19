@@ -12,7 +12,8 @@ with Worldline): 284,807 card transactions by European cardholders over two days
 `Amount`, and `V1`–`V28` (PCA components; the original card features are confidential).
 It is the most widely used public benchmark for card-fraud detection, which makes our results
 comparable with published work. Get it with `python dataset/download_creditcard.py`
-(OpenML dataset 1597, or Kaggle `mlg-ulb/creditcardfraud`).
+(Kaggle `mlg-ulb/creditcardfraud` via kagglehub, which needs no Kaggle account). OpenML dataset 1597
+is the same data but drops `Time`, which out-of-time validation needs, so it is not used.
 
 Cleaning: exact duplicate rows are removed before splitting (the raw file contains about a
 thousand), otherwise identical rows could land in both training and test sets.
@@ -25,7 +26,8 @@ the loaded model was trained on it.
 | Step | What we do | Why |
 |---|---|---|
 | Holdout | Last 20% of transactions by `Time` are held out (**out-of-time**) | Fraud models are deployed on future traffic; a random split lets the model see the "future" |
-| Model selection | 5-fold stratified cross-validation on the training part only | Mean ± std across folds shows stability, not one lucky split |
+| Model selection | 5-fold **forward-chaining time-series** cross-validation on the training part only (each fold trains on earlier transactions and validates on the next block) | Mean ± std across folds shows stability; validating on later data matches how the model is used. Stratified (random) CV picked a model that did worse out-of-time, so we switched |
+| Tuning | 18-setting XGBoost grid (depth 3/4/6 × class weight none/√/full × learning rate 0.05/0.1, 300 trees), scored by the same CV | Hyper-parameters are chosen without touching the holdout |
 | Preprocessing | `StandardScaler` and SMOTE live **inside** each fold's pipeline | Resampling or scaling before splitting leaks test information — the most common flaw in published fraud papers |
 | Baselines | Logistic Regression and Random Forest vs. XGBoost (class weights) and XGBoost + SMOTE | Shows the chosen model is better than simpler alternatives, not just "good" |
 | Threshold | Chosen on **out-of-fold** predictions (best F1, or the lowest threshold meeting a target precision) | Tuning the threshold on the test set would inflate test precision/recall |
@@ -45,7 +47,40 @@ the loaded model was trained on it.
   labels must score a PR-AUC close to the fraud rate. If it scores higher, something leaks.
 - **Global explanation**: mean |SHAP| per feature on the holdout.
 
-## 4. Validation in the running system
+## 4. Results
+
+Run `xgboost-creditcard-20261019-0804` (training took 183 s on a laptop).
+
+| | |
+|---|---|
+| Data | 283,726 rows after de-duplication (473 fraud, 0.167%) |
+| Training part | 226,980 rows, 399 fraud |
+| Holdout (last 20% by time) | 56,746 rows, 74 fraud; 0 rows shared with training |
+| Selected | XGBoost (tuned): depth 4, √ class weight, lr 0.1 — CV PR-AUC 0.811 ± 0.015 |
+| Threshold (out-of-fold, best F1) | 0.700 (out-of-fold precision 0.90, recall 0.76) |
+
+Holdout, scored once:
+
+| Metric | Value | 95% CI |
+|---|---|---|
+| PR-AUC | 0.807 | 0.724 – 0.885 |
+| ROC-AUC | 0.990 | 0.981 – 0.997 |
+| Precision | 0.932 | 0.864 – 0.985 |
+| Recall | 0.743 | 0.646 – 0.839 |
+| F1 | 0.827 | 0.754 – 0.891 |
+| Confusion matrix | TP 55 · FP 4 · FN 19 · TN 56,668 | |
+
+Baselines on the same holdout (threshold 0.5): Logistic Regression 0.761 PR-AUC (precision 0.07,
+recall 0.89 — 933 false alarms), Random Forest 0.813 (0.98 / 0.70), XGBoost with class weights
+0.792 (0.64 / 0.78), XGBoost + SMOTE 0.774 (0.46 / 0.76). Random Forest is marginally ahead on
+the holdout PR-AUC but well inside the tuned model's interval, and it was weaker and less stable in
+cross-validation (0.789 ± 0.032), which is the only thing selection is allowed to look at.
+SMOTE did not help over class weighting here.
+
+Leakage check: the same pipeline on shuffled labels scores PR-AUC 0.0011, against a holdout
+fraud rate of 0.0013. Top drivers by mean |SHAP|: V4, V14, V12, V1, V8, V10.
+
+## 5. Validation in the running system
 
 - **Threshold tuner** — precision, recall and alert volume at every threshold on the holdout.
 - **Simulation** replays held-out transactions with their true labels, so the dashboard shows
@@ -54,7 +89,7 @@ the loaded model was trained on it.
 - **Batch CSV upload** with a `Class` column reports precision and recall on any labelled file.
 - **Per-decision explanations** (TreeSHAP) let a reviewer check *why* each alert was raised.
 
-## 5. Reproduce
+## 6. Reproduce
 
 ```bash
 python dataset/download_creditcard.py

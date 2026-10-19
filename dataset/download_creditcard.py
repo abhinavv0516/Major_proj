@@ -11,12 +11,13 @@ Cite: A. Dal Pozzolo, O. Caelen, R. A. Johnson, G. Bontempi. "Calibrating Probab
 with Undersampling for Unbalanced Classification." IEEE SSCI / CIDM, 2015.
 
 Sources tried, in order:
-  1. OpenML dataset 1597 ("creditcard") through scikit-learn  -> needs internet only
-  2. Kaggle CLI (mlg-ulb/creditcardfraud)                    -> needs ~/.kaggle/kaggle.json
+  1. kagglehub (mlg-ulb/creditcardfraud)   -> public download, no Kaggle account needed
+  2. Kaggle CLI                            -> needs ~/.kaggle/kaggle.json
+(OpenML's copy, dataset 1597, drops the Time column, which the out-of-time split needs.)
 
 Usage (from the repo root):
+    pip install kagglehub
     python dataset/download_creditcard.py
-    python dataset/download_creditcard.py --source kaggle
 """
 import argparse
 import shutil
@@ -33,16 +34,14 @@ EXPECTED_ROWS = 284_807
 EXPECTED_FRAUD = 492
 
 
-def from_openml() -> pd.DataFrame:
-    from sklearn.datasets import fetch_openml
-
-    print("Downloading OpenML dataset 1597 (creditcard)... this is ~150 MB, give it a minute.")
-    bunch = fetch_openml(data_id=1597, as_frame=True, parser="auto")
-    df = bunch.frame.copy()
-    target = bunch.target_names[0] if getattr(bunch, "target_names", None) else "Class"
-    if target != "Class":
-        df = df.rename(columns={target: "Class"})
-    return df
+def from_kagglehub() -> pd.DataFrame:
+    try:
+        import kagglehub
+    except ImportError as exc:
+        raise RuntimeError("kagglehub not installed: pip install kagglehub") from exc
+    print("Downloading mlg-ulb/creditcardfraud with kagglehub (~66 MB)...")
+    folder = Path(kagglehub.dataset_download("mlg-ulb/creditcardfraud"))
+    return pd.read_csv(folder / "creditcard.csv")
 
 
 def from_kaggle() -> pd.DataFrame:
@@ -75,10 +74,10 @@ def validate(df: pd.DataFrame) -> pd.DataFrame:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--source", choices=["openml", "kaggle"], default="openml")
+    parser.add_argument("--source", choices=["kagglehub", "kaggle"], default="kagglehub")
     args = parser.parse_args()
 
-    loaders = {"openml": from_openml, "kaggle": from_kaggle}
+    loaders = {"kagglehub": from_kagglehub, "kaggle": from_kaggle}
     order = [args.source] + [s for s in loaders if s != args.source]
     for source in order:
         try:

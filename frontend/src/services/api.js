@@ -1,7 +1,8 @@
 import axios from 'axios';
 
-// Override with VITE_API_URL in frontend/.env (e.g. for Docker or a deployed backend).
-export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+// Dev: '/api' is proxied to http://127.0.0.1:8000 by vite.config.js.
+// Production builds: set VITE_API_URL (e.g. http://localhost:8000/api) in frontend/.env or as a build arg.
+export const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 const api = axios.create({ baseURL: API_URL, timeout: 30000 });
 
@@ -26,7 +27,9 @@ api.interceptors.response.use(
 
 /** Human-readable message from any API error (FastAPI 422s return a list of issues). */
 export const errorMessage = (err, fallback = 'Something went wrong') => {
-  if (!err?.response) return 'Cannot reach the API. Is the backend running on port 8000?';
+  if (!err?.response || err.response.status === 502 || err.response.status === 504) {
+    return 'Cannot reach the API. Is the backend running on port 8000?';
+  }
   const detail = err.response.data?.detail;
   if (typeof detail === 'string') return detail;
   if (Array.isArray(detail) && detail.length) {

@@ -39,7 +39,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import StratifiedKFold, TimeSeriesSplit, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
@@ -55,7 +55,7 @@ TARGET = "Class"
 
 DATASET_INFO = {
     "creditcard": {
-        "name": "ULB Credit Card Fraud Detection (Kaggle / OpenML 1597)",
+        "name": "ULB Credit Card Fraud Detection (Kaggle mlg-ulb/creditcardfraud)",
         "source": "Machine Learning Group, Université Libre de Bruxelles & Worldline; "
                   "European cardholders, September 2013",
         "citation": "Dal Pozzolo, Caelen, Johnson, Bontempi. Calibrating Probability with "
@@ -131,10 +131,47 @@ XGB_PARAMS = dict(n_estimators=300, max_depth=4, learning_rate=0.05, subsample=0
                   eval_metric="aucpr", n_jobs=-1)
 
 
-def make_xgb(y_train, seed: int, balanced: bool = True) -> XGBClassifier:
+def class_weight(y_train, mode: str) -> float:
+    """scale_pos_weight: 'full' = legit/fraud ratio, 'sqrt' = its square root, 'none' = 1."""
     pos = max(int(np.sum(y_train)), 1)
-    spw = (len(y_train) - pos) / pos if balanced else 1.0
-    return XGBClassifier(**XGB_PARAMS, scale_pos_weight=spw, random_state=seed)
+    ratio = (len(y_train) - pos) / pos
+    return {"full": ratio, "sqrt": float(np.sqrt(ratio)), "none": 1.0}[mode]
+
+
+def make_xgb(y_train, seed: int, balanced: bool = True, weight: str | None = None, **overrides) -> XGBClassifier:
+    mode = weight or ("full" if balanced else "none")
+    params = {**XGB_PARAMS, **overrides}
+    return XGBClassifier(**params, scale_pos_weight=class_weight(y_train, mode), random_state=seed)
+
+
+# Small, cheap hyper-parameter search for the production model (CV on the training part only).
+TUNING_GRID = [
+    {"max_depth": d, "weight": w, "learning_rate": lr, "n_estimators": n}
+    for d in (3, 4, 6)
+    for w in ("none", "sqrt", "full")
+    for lr, n in ((0.05, 300), (0.1, 300))
+]
+
+
+def xgb_factory(params: dict, seed: int):
+    p = dict(params)
+    weight = p.pop("weight")
+    return lambda y: Pipeline([("scale", make_scaler()), ("clf", make_xgb(y, seed, weight=weight, **p))])
+
+
+def tune_xgb(train: pd.DataFrame, folds: int, seed: int) -> tuple[dict, list[dict], dict, np.ndarray]:
+    """Grid search by mean CV PR-AUC. Returns best params, the full table, best CV result, best OOF."""
+    table, best = [], None
+    for params in TUNING_GRID:
+        res, oof = cross_validate(train, {"cand": xgb_factory(params, seed)}, folds, seed, quiet=True)
+        s = res["cand"]["summary"]
+        row = {"params": params, "pr_auc": s["pr_auc"], "roc_auc": s["roc_auc"], "seconds": res["cand"]["seconds"]}
+        table.append(row)
+        log(f"  tune {params}  PR-AUC {s['pr_auc']['mean']:.3f} ± {s['pr_auc']['std']:.3f}")
+        if best is None or s["pr_auc"]["mean"] > best[0]["pr_auc"]["mean"]:
+            best = (row, res["cand"], oof["cand"])
+    table.sort(key=lambda r: r["pr_auc"]["mean"], reverse=True)
+    return best[0]["params"], table, best[1], best[2]
 
 
 def smote_available() -> bool:
@@ -177,15 +214,33 @@ def candidates(seed: int, include_baselines: bool, include_smote: bool) -> dict:
     return out
 
 
-def cross_validate(train: pd.DataFrame, models: dict, folds: int, seed: int) -> tuple[dict, dict]:
+CV_KIND = "temporal"  # set from --cv in main()
+
+
+def cv_splits(train: pd.DataFrame, folds: int, seed: int):
+    """
+    temporal   : forward-chaining folds (train on earlier rows, validate on the next block), so
+                 model selection is judged the same way as the out-of-time holdout.
+    stratified : shuffled stratified k-fold.
+    `train` is already sorted by Time when the holdout split is temporal.
+    """
     X, y = train[FEATURES], train[TARGET].to_numpy()
-    skf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=seed)
+    if CV_KIND == "temporal":
+        return list(TimeSeriesSplit(n_splits=folds).split(X))
+    return list(StratifiedKFold(n_splits=folds, shuffle=True, random_state=seed).split(X, y))
+
+
+def cross_validate(train: pd.DataFrame, models: dict, folds: int, seed: int,
+                   quiet: bool = False) -> tuple[dict, dict]:
+    """Returns per-model fold metrics and out-of-fold probabilities (NaN where a row was never validated)."""
+    X, y = train[FEATURES], train[TARGET].to_numpy()
+    splits = cv_splits(train, folds, seed)
     results, oof = {}, {}
     for name, factory in models.items():
         t0 = time.time()
-        probs = np.zeros(len(y))
+        probs = np.full(len(y), np.nan)
         fold_metrics = []
-        for k, (tr, va) in enumerate(skf.split(X, y), 1):
+        for tr, va in splits:
             est = factory(y[tr])
             est.fit(X.iloc[tr], y[tr])
             probs[va] = est.predict_proba(X.iloc[va])[:, 1]
@@ -197,9 +252,10 @@ def cross_validate(train: pd.DataFrame, models: dict, folds: int, seed: int) -> 
         }
         oof[name] = probs
         s = results[name]["summary"]
-        log(f"CV {name:<24} PR-AUC {s['pr_auc']['mean']:.3f} ± {s['pr_auc']['std']:.3f}   "
-            f"ROC-AUC {s['roc_auc']['mean']:.3f}   recall@0.5 {s['recall']['mean']:.3f}   "
-            f"({results[name]['seconds']}s)")
+        if not quiet:
+            log(f"CV {name:<24} PR-AUC {s['pr_auc']['mean']:.3f} ± {s['pr_auc']['std']:.3f}   "
+                f"ROC-AUC {s['roc_auc']['mean']:.3f}   recall@0.5 {s['recall']['mean']:.3f}   "
+                f"({results[name]['seconds']}s)")
     return results, oof
 
 
@@ -213,11 +269,14 @@ def parse_args():
     p.add_argument("--split", choices=["temporal", "stratified"], default="temporal")
     p.add_argument("--test-size", type=float, default=0.2)
     p.add_argument("--cv-folds", type=int, default=5)
+    p.add_argument("--cv", choices=["temporal", "stratified"], default=None,
+                   help="CV scheme for model selection (default: temporal with a temporal split, else stratified)")
     p.add_argument("--threshold-rule", choices=["f1", "precision"], default="f1")
     p.add_argument("--target-precision", type=float, default=0.8)
     p.add_argument("--bootstrap", type=int, default=1000)
     p.add_argument("--no-baselines", action="store_true", help="skip Logistic Regression / Random Forest")
     p.add_argument("--no-smote", action="store_true")
+    p.add_argument("--no-tuning", action="store_true", help="skip the XGBoost hyper-parameter search")
     p.add_argument("--no-mlflow", action="store_true")
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
@@ -231,6 +290,8 @@ def main() -> None:
             "Run `python dataset/download_creditcard.py` for the real dataset.")
     started = time.time()
 
+    global CV_KIND
+    CV_KIND = args.cv or ("temporal" if args.split == "temporal" else "stratified")
     df, data_stats = load_data(data_path)
     train, holdout, split_info = split(df, args.split, args.test_size, args.seed)
 
@@ -246,11 +307,23 @@ def main() -> None:
     # 1) Cross-validation on the training part only
     cv_results, oof = cross_validate(train, models, args.cv_folds, args.seed)
 
+    tuning = None
+    if not args.no_tuning:
+        log(f"Tuning XGBoost over {len(TUNING_GRID)} settings (CV on the training part only)...")
+        best_params, tuning, best_res, best_oof = tune_xgb(train, args.cv_folds, args.seed)
+        models["XGBoost (tuned)"] = xgb_factory(best_params, args.seed)
+        cv_results["XGBoost (tuned)"] = best_res
+        oof["XGBoost (tuned)"] = best_oof
+        s = best_res["summary"]
+        log(f"CV {'XGBoost (tuned)':<24} PR-AUC {s['pr_auc']['mean']:.3f} ± {s['pr_auc']['std']:.3f}   "
+            f"ROC-AUC {s['roc_auc']['mean']:.3f}   best {best_params}")
+
     # 2) Pick the production XGBoost variant by CV PR-AUC (the API needs an XGBoost booster for SHAP)
     xgb_names = [n for n in models if n.startswith("XGBoost")]
     selected = max(xgb_names, key=lambda n: cv_results[n]["summary"]["pr_auc"]["mean"])
     y_train = train[TARGET].to_numpy()
-    thr = V.choose_threshold(y_train, oof[selected], rule=args.threshold_rule,
+    covered = ~np.isnan(oof[selected])
+    thr = V.choose_threshold(y_train[covered], oof[selected][covered], rule=args.threshold_rule,
                              target_precision=args.target_precision)
     threshold = thr["threshold"]
     log(f"Selected: {selected}. Threshold {threshold} ({thr['rule']}, chosen on out-of-fold predictions)")
@@ -291,6 +364,10 @@ def main() -> None:
         key=lambda d: d["mean_abs_shap"], reverse=True,
     )
 
+    clf_params = clf.get_params()
+    production_params = {k: clf_params[k] for k in
+                         ("n_estimators", "max_depth", "learning_rate", "subsample", "colsample_bytree",
+                          "min_child_weight", "scale_pos_weight", "tree_method")}
     trained_at = datetime.now(timezone.utc)
     version = f"xgboost-{data_path.stem.replace('_', '-')}-{trained_at:%Y%m%d-%H%M}"
 
@@ -301,9 +378,13 @@ def main() -> None:
         "split": split_info,
         "protocol": {
             "cv_folds": args.cv_folds,
-            "cv_strategy": "StratifiedKFold(shuffle=True) on the training part only",
+            "cv_strategy": CV_KIND,
+            "cv_description": ("Forward-chaining time-series CV on the training part (each fold trains on "
+                               "earlier transactions and validates on the next block)"
+                               if CV_KIND == "temporal" else
+                               "Stratified shuffled k-fold CV on the training part"),
             "preprocessing": "StandardScaler (and SMOTE) fitted inside each training fold",
-            "selection": "Production XGBoost variant chosen by mean CV PR-AUC",
+            "selection": "Production XGBoost variant (incl. a small hyper-parameter grid) chosen by mean CV PR-AUC",
             "threshold": "Chosen on out-of-fold predictions; the holdout is never used for tuning",
             "seed": args.seed,
         },
@@ -319,6 +400,7 @@ def main() -> None:
             "cost": V.cost_analysis(y_hold, p_hold, holdout["Amount"].to_numpy(), threshold),
         },
         "holdout_comparison": holdout_comparison,
+        "tuning": tuning,
         "sanity_checks": {
             "holdout_prevalence": float(y_hold.mean()),
             "shuffled_label_pr_auc": sanity_pr_auc,
@@ -336,7 +418,7 @@ def main() -> None:
         "trained_at": trained_at.isoformat(),
         "threshold": threshold,
         "threshold_rule": thr["rule"],
-        "params": {k: v for k, v in XGB_PARAMS.items()},
+        "params": production_params,
         "features": FEATURES,
         "dataset": data_stats,
         "split": split_info,

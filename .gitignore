@@ -14,3 +14,7 @@ dataset/creditcard.csv
 
 # Local env overrides
 frontend/.env.local
+
+# Local run state (recreated on startup / by training)
+backend/sql_app.db
+mlruns/

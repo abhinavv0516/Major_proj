@@ -45,18 +45,10 @@ const Transactions = () => {
   const [openId, setOpenId] = useState(null);
   const [fresh, setFresh] = useState(new Set());
 
-  const load = useCallback(async () => {
-    try {
-      const { data } = await getTransactions(0, 1000);
-      setRows(data);
-      setError('');
-    } catch (err) {
-      setError(errorMessage(err, 'Could not load transactions'));
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+  const load = useCallback(() => getTransactions(0, 1000)
+    .then(({ data }) => { setRows(data); setError(''); })
+    .catch((err) => setError(errorMessage(err, 'Could not load transactions')))
+    .finally(() => { setLoading(false); setRefreshing(false); }), []);
 
   useEffect(() => { load(); }, [load]);
 
@@ -187,7 +179,7 @@ const Transactions = () => {
       </Card>
 
       <SimulateModal open={simOpen} onClose={() => setSimOpen(false)} onDone={load} />
-      <TransactionDrawer id={openId} onClose={() => setOpenId(null)} onReviewed={onReviewed} />
+      <TransactionDrawer key={openId ?? 'none'} id={openId} onClose={() => setOpenId(null)} onReviewed={onReviewed} />
     </div>
   );
 };

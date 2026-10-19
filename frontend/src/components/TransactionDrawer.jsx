@@ -23,21 +23,15 @@ const TransactionDrawer = ({ id, onClose, onReviewed }) => {
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => {
-    setError('');
-    try {
-      const { data } = await getTransaction(id);
-      setTx(data);
-    } catch (err) {
-      setError(errorMessage(err, 'Could not load transaction'));
-    }
+  // Parents render this with key={id}, so state starts fresh for every transaction.
+  const load = useCallback(() => {
+    if (id == null) return;
+    getTransaction(id)
+      .then(({ data }) => { setTx(data); setError(''); })
+      .catch((err) => setError(errorMessage(err, 'Could not load transaction')));
   }, [id]);
 
-  useEffect(() => {
-    setTx(null);
-    setNotes('');
-    if (id != null) load();
-  }, [id, load]);
+  useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();

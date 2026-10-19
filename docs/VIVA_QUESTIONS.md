@@ -32,3 +32,18 @@
 
 **Q11: What happens after an alert?**
 *A11:* It lands in the review queue. An analyst opens it, sees the explanation and audit trail, and confirms it as fraud or clears it. Reviews are stored, logged, and used as ground truth for the live precision/recall shown on the dashboard.
+
+**Q12: What are your final numbers?**
+*A12:* On the out-of-time holdout (56,746 later transactions, 74 fraud), scored once: PR-AUC 0.807 (95% CI 0.72–0.88), ROC-AUC 0.990, precision 0.93, recall 0.74, F1 0.83. That is 55 frauds caught, 19 missed and 4 false alarms, about one alert per 1,000 transactions. Cross-validated PR-AUC was 0.811 ± 0.015, so the holdout agrees with CV.
+
+**Q13: Random Forest has a slightly higher holdout PR-AUC (0.813). Why not use it?**
+*A13:* Because the holdout is not allowed to choose the model; if we picked whichever won on the holdout, the holdout would stop being an unbiased test. Selection uses cross-validation, where the tuned XGBoost was best and most stable (0.811 ± 0.015 vs 0.789 ± 0.032). The 0.006 gap on the holdout is well inside the confidence interval (0.72–0.88) with only 74 fraud cases. XGBoost also has much better ROC-AUC (0.990 vs 0.969) and exact TreeSHAP explanations.
+
+**Q14: Why time-series cross-validation instead of stratified k-fold?**
+*A14:* We tried both. Stratified CV shuffles time, so the model validates on transactions from before ones it trained on; the model it selected scored 0.757 PR-AUC on the out-of-time holdout. Forward-chaining CV always trains on earlier data and validates on the next block, like deployment, and the model it selected scored 0.807. The CV estimate (0.811) also matched the holdout much better.
+
+**Q15: Why is recall only 74%?**
+*A15:* It's a trade-off chosen by the threshold. At 0.70 we get 93% precision; lowering it catches more fraud at the cost of more false alarms (the threshold tuner on the Model page shows the curve). Some frauds look exactly like normal transactions in these 30 anonymised features; in production more features (device, merchant history, velocity) would raise recall. The threshold can be changed with `FRAUD_THRESHOLD` without retraining.
+
+**Q16: Why did SMOTE not help?**
+*A16:* XGBoost with class weighting already handles imbalance by up-weighting fraud in the loss. SMOTE adds synthetic frauds interpolated between real ones, which can blur the boundary in a 30-dimensional PCA space and produced more false alarms (precision 0.46 vs 0.64 at 0.5). We report it rather than hide it: a negative result measured correctly is still a result.

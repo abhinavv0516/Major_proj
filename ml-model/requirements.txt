@@ -3,5 +3,6 @@ numpy
 scikit-learn>=1.2
 xgboost
 imbalanced-learn
+kagglehub  # dataset/download_creditcard.py
 joblib
 mlflow  # optional: experiment tracking (train.py skips it if missing)

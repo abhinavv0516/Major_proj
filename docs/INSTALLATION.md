@@ -25,7 +25,7 @@ cp backend/.env.example backend/.env   # only if backend/.env doesn't exist yet
 
 ### Real dataset (use this for results you report)
 ```bash
-python dataset/download_creditcard.py     # tries OpenML first, then the Kaggle CLI
+python dataset/download_creditcard.py     # kagglehub (no Kaggle account needed), then the Kaggle CLI
 python ml-model/train.py                  # ~5–15 min on a laptop; prints CV and holdout results
 ```
 `download_creditcard.py` saves `dataset/creditcard.csv` (284,807 transactions, 492 fraud). If both
@@ -65,7 +65,9 @@ npm install
 npm run dev
 ```
 Open http://localhost:5173. To point at another API, create `frontend/.env` with
-`VITE_API_URL=http://host:8000/api`.
+`VITE_API_URL=http://host:8000/api`. In development you don't need it: the Vite dev server proxies
+`/api` to `http://127.0.0.1:8000` (change with `VITE_PROXY_TARGET`), so the browser only talks to
+port 5173.
 
 ## 6. PostgreSQL (production database)
 ```bash

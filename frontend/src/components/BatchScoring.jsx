@@ -5,7 +5,8 @@ import { useToast } from '../context/ToastContext';
 import { Card, Stat, RiskBadge, ProbBar, Empty } from './ui';
 import { COLORS, FEATURES, num, pct, money } from '../utils/format';
 
-const CHUNK = 5000;      // backend limit per request
+const CHUNK = 5000;
+const clock = () => performance.now();      // backend limit per request
 const MAX_ROWS = 100000; // keep the browser responsive
 
 /** Parse a numeric CSV with a header row. Returns { rows, labels, error }. */
@@ -58,7 +59,7 @@ const BatchScoring = () => {
     setProgress(0);
     const scored = [];
     let modelMs = 0;
-    const started = performance.now();
+    const started = clock();
     try {
       for (let i = 0; i < parsed.rows.length; i += CHUNK) {
         const { data } = await api.post('/predict/batch', { transactions: parsed.rows.slice(i, i + CHUNK) });
@@ -66,7 +67,7 @@ const BatchScoring = () => {
         data.results.forEach((r) => scored.push({ ...r, index: r.index + i }));
         setProgress(Math.min(1, (i + CHUNK) / parsed.rows.length));
         if (i + CHUNK >= parsed.rows.length) {
-          finish(parsed, scored, { modelMs, wallMs: performance.now() - started, threshold: data.threshold, version: data.model_version });
+          finish(parsed, scored, { modelMs, wallMs: clock() - started, threshold: data.threshold, version: data.model_version });
         }
       }
     } catch (err) {

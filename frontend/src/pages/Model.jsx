@@ -10,7 +10,11 @@ import { COLORS, AXIS_TICK, GRID_STROKE, TOOLTIP_STYLE, num, pct, money } from '
 
 const fmt3 = (v) => (v == null ? '—' : v.toFixed(3));
 const meanStd = (s) => (s ? `${s.mean.toFixed(3)} ± ${s.std.toFixed(3)}` : '—');
-const ci = (c) => (c ? `95% CI ${c.low.toFixed(3)}–${c.high.toFixed(3)}` : undefined);
+const ci = (c, asPct = false) => {
+  if (!c) return undefined;
+  const f = asPct ? (v) => pct(v) : (v) => v.toFixed(3);
+  return `95% CI ${f(c.low)}–${f(c.high)}`;
+};
 
 const Confusion = ({ tp, fp, fn, tn }) => {
   const cell = (label, value, color, hint) => (
@@ -159,7 +163,7 @@ const Model = () => {
                   report.split.strategy === 'temporal'
                     ? `Out-of-time holdout: trained on earlier transactions, tested on the last ${pct(report.split.test_size, 0)}`
                     : `Stratified random holdout of ${pct(report.split.test_size, 0)}`,
-                  `${report.protocol.cv_folds}-fold stratified cross-validation on the training part only`,
+                  `${report.protocol.cv_description || 'Cross-validation on the training part only'} · ${report.protocol.cv_folds} folds`,
                   report.protocol.preprocessing,
                   report.protocol.threshold,
                   `Leakage check: ${report.sanity_checks.rows_in_both_splits} identical rows in both splits; shuffled-label PR-AUC ${fmt3(report.sanity_checks.shuffled_label_pr_auc)} vs fraud rate ${fmt3(report.sanity_checks.holdout_prevalence)}`,
@@ -174,8 +178,8 @@ const Model = () => {
           <div className="grid-kpi fade-up" style={{ marginBottom: '16px' }}>
             <Stat label="PR-AUC (holdout)" value={fmt3(m.pr_auc)} sub={ci(intervals.pr_auc)} color={COLORS.indigo} />
             <Stat label="ROC-AUC" value={fmt3(m.roc_auc)} sub={ci(intervals.roc_auc)} color={COLORS.cyan} />
-            <Stat label="Recall" value={pct(m.recall)} sub={ci(intervals.recall)} color={COLORS.purple} />
-            <Stat label="Precision" value={pct(m.precision)} sub={ci(intervals.precision)} color={COLORS.emerald} />
+            <Stat label="Recall" value={pct(m.recall)} sub={ci(intervals.recall, true)} color={COLORS.purple} />
+            <Stat label="Precision" value={pct(m.precision)} sub={ci(intervals.precision, true)} color={COLORS.emerald} />
             <Stat label="Fraud value caught" value={pct(h.cost.share_of_fraud_amount_caught)} sub={`${money(h.cost.fraud_amount_caught)} of ${money(h.cost.fraud_amount_total)}`} color={COLORS.amber} />
           </div>
 
@@ -210,6 +214,29 @@ const Model = () => {
               Production uses XGBoost because the API explains each decision with its built-in TreeSHAP.
             </p>
           </Card>
+
+          {report.tuning?.length > 0 && (
+            <Card title="Hyper-parameter search" subtitle={`XGBoost settings compared by ${report.protocol.cv_folds}-fold CV PR-AUC on the training part · top 6 of ${report.tuning.length}`} style={{ marginBottom: '16px' }}>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="table">
+                  <thead><tr><th>#</th><th>Max depth</th><th>Class weight</th><th>Learning rate</th><th>Trees</th><th>CV PR-AUC</th><th>CV ROC-AUC</th></tr></thead>
+                  <tbody>
+                    {report.tuning.slice(0, 6).map((t, i) => (
+                      <tr key={i} style={i === 0 ? { background: 'var(--indigo-t)' } : undefined}>
+                        <td className="mono">{i + 1}</td>
+                        <td className="mono">{t.params.max_depth}</td>
+                        <td>{{ none: 'none', sqrt: '√(legit/fraud)', full: 'legit/fraud' }[t.params.weight]}</td>
+                        <td className="mono">{t.params.learning_rate}</td>
+                        <td className="mono">{t.params.n_estimators}</td>
+                        <td className="mono" style={{ fontWeight: 700 }}>{meanStd(t.pr_auc)}</td>
+                        <td className="mono">{meanStd(t.roc_auc)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
 
           {/* Curves */}
           <div className="stack-md fade-up" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginBottom: '16px' }}>

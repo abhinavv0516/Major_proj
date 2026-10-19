@@ -1,5 +1,3 @@
-import React from 'react';
-
 // A reusable glassmorphism card component
 const GlassyCard = ({ children, style = {} }) => {
   const baseStyle = {

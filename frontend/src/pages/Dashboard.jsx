@@ -36,24 +36,19 @@ const Dashboard = () => {
   const [openId, setOpenId] = useState(null);
   const refreshTimer = useRef(null);
 
-  const fetchAll = useCallback(async () => {
-    try {
-      const [a, t, q] = await Promise.all([
-        getAnalytics(),
-        getTimeseries(bucket, BUCKETS[bucket].points),
-        getTransactions(0, 200),
-      ]);
+  const fetchAll = useCallback(() => Promise.all([
+    getAnalytics(),
+    getTimeseries(bucket, BUCKETS[bucket].points),
+    getTransactions(0, 200),
+  ])
+    .then(([a, t, q]) => {
       setSummary(a.data);
       setSeries(t.data);
       setQueue(q.data.filter((x) => x.is_fraud && !x.review_status).slice(0, 6));
       setError('');
-    } catch (err) {
-      setError(errorMessage(err, 'Could not load dashboard data'));
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [bucket]);
+    })
+    .catch((err) => setError(errorMessage(err, 'Could not load dashboard data')))
+    .finally(() => { setLoading(false); setRefreshing(false); }), [bucket]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -218,7 +213,7 @@ const Dashboard = () => {
       )}
 
       <SimulateModal open={simOpen} onClose={() => setSimOpen(false)} onDone={fetchAll} />
-      <TransactionDrawer id={openId} onClose={() => setOpenId(null)} onReviewed={fetchAll} />
+      <TransactionDrawer key={openId ?? 'none'} id={openId} onClose={() => setOpenId(null)} onReviewed={fetchAll} />
     </div>
   );
 };

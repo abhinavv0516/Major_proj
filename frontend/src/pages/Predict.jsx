@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Zap, ShieldAlert, ShieldCheck, Shuffle, Save, Info, ChevronRight, Layers, FileSpreadsheet } from 'lucide-react';
 import { predictFraud, createTransaction, getSampleTransaction, getModelInfo, errorMessage } from '../services/api';
@@ -42,22 +42,19 @@ const SingleScoring = () => {
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState(null);
 
-  useEffect(() => {
-    getModelInfo().then(({ data }) => setInfo(data)).catch(() => {});
-    loadSample('legit');
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const loadSample = async (label) => {
-    try {
-      const { data } = await getSampleTransaction(label);
+  const loadSample = useCallback((label) => getSampleTransaction(label)
+    .then(({ data }) => {
       setForm(data);
       setSampleLabel(label);
       setResult(null);
       setSavedId(null);
-    } catch (err) {
-      addToast(errorMessage(err, 'Could not load a sample'), 'error', 5000);
-    }
-  };
+    })
+    .catch((err) => addToast(errorMessage(err, 'Could not load a sample'), 'error', 5000)), [addToast]);
+
+  useEffect(() => {
+    getModelInfo().then(({ data }) => setInfo(data)).catch(() => {});
+    loadSample('legit');
+  }, [loadSample]);
 
   const set = (k, v) => {
     setForm((p) => ({ ...p, [k]: v === '' ? '' : Number(v) }));

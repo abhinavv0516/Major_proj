@@ -42,7 +42,7 @@ ml-model/
   validation.py        metric helpers (CIs, calibration, curves, cost)
   evaluate.py          re-evaluate the saved model on any labelled CSV
 dataset/
-  download_creditcard.py   fetches the real ULB dataset (OpenML / Kaggle)
+  download_creditcard.py   fetches the real ULB dataset from Kaggle (no account needed)
   generate_sample_data.py  small synthetic sample for development
 frontend/src/
   pages/               Dashboard, Transactions, Live Analyzer, Model & Validation
@@ -73,6 +73,37 @@ Then **Simulate traffic** on the dashboard. API docs: http://localhost:8000/docs
 
 Full instructions, PostgreSQL and Docker: [docs/INSTALLATION.md](docs/INSTALLATION.md).
 Validation methodology: [docs/VALIDATION.md](docs/VALIDATION.md). API reference: [docs/API_DOCS.md](docs/API_DOCS.md).
+
+## Results (real data, out-of-time holdout)
+
+Trained on the ULB credit-card dataset (283,726 transactions after removing 1,081 duplicates,
+473 fraud). The last 20% of transactions by time (56,746 rows, 74 fraud) are held out and scored
+once. Model: `XGBoost (tuned)`, depth 4, √-class-weighting, threshold 0.70 chosen on
+out-of-fold predictions.
+
+| Metric (holdout) | Value | 95% bootstrap CI |
+|---|---|---|
+| PR-AUC | **0.807** | 0.724 – 0.885 |
+| ROC-AUC | 0.990 | 0.981 – 0.997 |
+| Precision | 0.932 | 0.864 – 0.985 |
+| Recall | 0.743 | 0.646 – 0.839 |
+| F1 | 0.827 | 0.754 – 0.891 |
+
+55 frauds caught, 19 missed, **4 false alarms in 56,672 legitimate transactions** (about one
+alert per 1,000 transactions); 65% of fraud value caught. A model trained on shuffled labels
+scores PR-AUC 0.0011 against a fraud rate of 0.0013, so nothing leaks.
+
+| Model | CV PR-AUC (mean ± std) | Holdout PR-AUC | Holdout precision / recall |
+|---|---|---|---|
+| Logistic Regression | 0.752 ± 0.075 | 0.761 | 0.07 / 0.89 |
+| Random Forest | 0.789 ± 0.032 | 0.813 | 0.98 / 0.70 |
+| XGBoost (class weights) | 0.795 ± 0.025 | 0.792 | 0.64 / 0.78 |
+| XGBoost + SMOTE | 0.787 ± 0.026 | 0.774 | 0.46 / 0.76 |
+| **XGBoost (tuned)** — selected | **0.811 ± 0.015** | 0.807 | 0.93 / 0.74 |
+
+Selection uses cross-validation only. Random Forest happens to edge it on the holdout, but
+inside the confidence interval; the tuned XGBoost is the most stable across folds, has far
+better ROC-AUC, and supports exact TreeSHAP explanations. Details: [docs/VALIDATION.md](docs/VALIDATION.md).
 
 ## Tests
 
