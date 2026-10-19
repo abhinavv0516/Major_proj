@@ -11,6 +11,7 @@ Lifecycle:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 import joblib
+import numpy as np
 import pandas as pd
 import xgboost as xgb
 
@@ -30,10 +32,29 @@ logger = logging.getLogger(__name__)
 ML_DIR = Path(__file__).resolve().parent.parent / "ml-model"
 MODEL_PATH = Path(os.getenv("MODEL_PATH", str(ML_DIR / "xgboost_model.pkl")))
 SCALER_PATH = Path(os.getenv("SCALER_PATH", str(ML_DIR / "scaler.pkl")))
-MODEL_VERSION = os.getenv("MODEL_VERSION", "xgboost-v1")
-FRAUD_THRESHOLD = float(os.getenv("FRAUD_THRESHOLD", "0.5"))      # >= this -> is_fraud
-HIGH_RISK_THRESHOLD = float(os.getenv("HIGH_RISK_THRESHOLD", "0.8"))  # >= this -> "high"
+MODEL_CARD_PATH = ML_DIR / "model_card.json"
 TOP_K_FEATURES = 5
+
+
+def read_model_card() -> dict:
+    """model_card.json is written by ml-model/train.py (version, tuned threshold, dataset...)."""
+    try:
+        return json.loads(MODEL_CARD_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def resolve_settings(card: dict) -> tuple[str, float, float]:
+    """
+    Version and thresholds. Precedence: backend/.env > model_card.json > defaults.
+      FRAUD_THRESHOLD      probability >= this  -> is_fraud, risk "medium"
+      HIGH_RISK_THRESHOLD  probability >= this  -> risk "high"
+    """
+    version = os.getenv("MODEL_VERSION") or card.get("version") or "xgboost-v1"
+    threshold = float(os.getenv("FRAUD_THRESHOLD") or card.get("threshold") or 0.5)
+    default_high = max(0.8, round((threshold + 1) / 2, 4))  # always above the fraud threshold
+    high = float(os.getenv("HIGH_RISK_THRESHOLD") or default_high)
+    return version, threshold, max(high, threshold)
 
 
 class ModelNotLoadedError(RuntimeError):
@@ -76,12 +97,13 @@ class FraudModel:
             raise FileNotFoundError(f"Model file not found: {model_path}")
         if not scaler_path.exists():
             raise FileNotFoundError(f"Scaler file not found: {scaler_path}")
+        version, threshold, high = resolve_settings(read_model_card())
         return cls(
             model=joblib.load(model_path),
             scaler=joblib.load(scaler_path),
-            version=MODEL_VERSION,
-            threshold=FRAUD_THRESHOLD,
-            high_risk_threshold=HIGH_RISK_THRESHOLD,
+            version=version,
+            threshold=threshold,
+            high_risk_threshold=high,
         )
 
     def risk_level(self, probability: float) -> str:
@@ -90,6 +112,33 @@ class FraudModel:
         if probability >= self.threshold:
             return "medium"
         return "low"
+
+    def predict_proba_batch(self, X: pd.DataFrame) -> "np.ndarray":
+        """Fraud probabilities for many rows at once (used for offline evaluation)."""
+        scaled = pd.DataFrame(self.scaler.transform(X[FEATURE_COLUMNS]), columns=FEATURE_COLUMNS)
+        return self.model.predict_proba(scaled)[:, 1]
+
+    def predict_batch(self, rows: list[dict[str, float]], explain: bool = False) -> list[dict]:
+        """Vectorised scoring for many transactions in one pass (much faster than a loop)."""
+        frame = pd.DataFrame([[float(r[c]) for c in FEATURE_COLUMNS] for r in rows], columns=FEATURE_COLUMNS)
+        scaled = pd.DataFrame(self.scaler.transform(frame), columns=FEATURE_COLUMNS)
+        probs = self.model.predict_proba(scaled)[:, 1]
+        tops: list[dict[str, float]] = [{} for _ in rows]
+        if explain:
+            contribs = self.booster.predict(xgb.DMatrix(scaled), pred_contribs=True)[:, :-1]
+            for i, row in enumerate(contribs):
+                order = np.argsort(-np.abs(row))[:TOP_K_FEATURES]
+                tops[i] = {FEATURE_COLUMNS[j]: float(row[j]) for j in order}
+        return [
+            {
+                "index": i,
+                "fraud_probability": float(p),
+                "is_fraud": bool(p >= self.threshold),
+                "risk_level": self.risk_level(float(p)),
+                "top_features": tops[i],
+            }
+            for i, p in enumerate(probs)
+        ]
 
     def predict(self, features: dict[str, float], explain: bool = True) -> PredictionResult:
         """
@@ -159,19 +208,27 @@ def model_status() -> dict:
     return {"loaded": _model is not None, "error": _load_error}
 
 
-def predict_fraud(transaction_data: dict) -> tuple[bool, float, str, dict, dict]:
+def normalize_features(data: dict) -> tuple[dict[str, float], list[str]]:
     """
-    Backward-compatible wrapper used by routes/transactions.py and worker.py.
-    Accepts 'V1' or 'v1' style keys. New code should use get_model().predict().
+    Map a payload with 'V1' or 'v1' style keys onto FEATURE_COLUMNS.
+    Returns (features, missing); missing features are filled with 0.0.
     """
     features: dict[str, float] = {}
     missing: list[str] = []
     for col in FEATURE_COLUMNS:
-        val = transaction_data.get(col, transaction_data.get(col.lower()))
+        val = data.get(col, data.get(col.lower()))
         if val is None:
             missing.append(col)
             val = 0.0
         features[col] = float(val)
+    return features, missing
+
+
+def predict_fraud(transaction_data: dict) -> tuple[bool, float, str, dict, dict]:
+    """
+    Backward-compatible tuple API. New code should use get_model().predict().
+    """
+    features, missing = normalize_features(transaction_data)
     if missing:
         logger.warning("predict_fraud: %d feature(s) missing, defaulted to 0.0: %s", len(missing), missing)
 

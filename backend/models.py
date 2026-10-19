@@ -4,6 +4,12 @@ from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Foreig
 from sqlalchemy.orm import relationship
 from backend.database import Base
 
+
+def utcnow() -> datetime:
+    """Naive UTC timestamp. The columns are TIMESTAMP WITHOUT TIME ZONE, and asyncpg
+    (PostgreSQL) rejects timezone-aware values for them. Responses re-attach UTC."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
@@ -17,7 +23,7 @@ class Transaction(Base):
     __tablename__ = "transactions"
     id = Column(Integer, primary_key=True, index=True)
     transaction_uuid = Column(String, unique=True, index=True, default=lambda: str(uuid.uuid4()))
-    submitted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    submitted_at = Column(DateTime, default=utcnow)
     status = Column(String, default="queued") # queued, scored, error
     raw_payload = Column(JSON)
     
@@ -34,7 +40,7 @@ class Score(Base):
     risk_level = Column(String) # low, medium, high
     prediction = Column(Boolean)
     processing_time = Column(Float)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utcnow)
     
     transaction = relationship("Transaction", back_populates="scores")
     explanation = relationship("Explanation", back_populates="score", uselist=False, cascade="all, delete-orphan")
@@ -45,7 +51,7 @@ class Explanation(Base):
     score_id = Column(Integer, ForeignKey("scores.id"))
     top_features = Column(JSON)
     shap_values = Column(JSON)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utcnow)
     
     score = relationship("Score", back_populates="explanation")
 
@@ -67,7 +73,7 @@ class Review(Base):
     review_status = Column(String)
     review_notes = Column(String)
     reviewed_by = Column(Integer, ForeignKey("users.id"))
-    reviewed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    reviewed_at = Column(DateTime, default=utcnow)
     
     transaction = relationship("Transaction", back_populates="reviews")
     reviewer = relationship("User")
@@ -79,6 +85,6 @@ class AuditLog(Base):
     action = Column(String)
     actor = Column(String)
     details = Column(JSON)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=utcnow)
     
     transaction = relationship("Transaction", back_populates="audit_logs")

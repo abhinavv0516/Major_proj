@@ -1,164 +1,76 @@
 import axios from 'axios';
 
-const API_URL = 'http://localhost:8000/api';
+// Override with VITE_API_URL in frontend/.env (e.g. for Docker or a deployed backend).
+export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
-const api = axios.create({
-  baseURL: API_URL,
-  timeout: 5000,
-});
+const api = axios.create({ baseURL: API_URL, timeout: 30000 });
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+  if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-// ─── Mock Data ───────────────────────────────────────────────────────────────
+// Expired or invalid token -> back to the login page.
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    const isAuthCall = err.config?.url?.startsWith('/auth/');
+    if (err.response?.status === 401 && !isAuthCall) {
+      localStorage.removeItem('token');
+      if (window.location.pathname !== '/login') window.location.assign('/login?expired=1');
+    }
+    return Promise.reject(err);
+  },
+);
 
-const MOCK_USERS_KEY = 'fraudx_mock_users';
-const MOCK_TRANSACTIONS_KEY = 'fraudx_mock_transactions';
-
-const getMockUsers = () => JSON.parse(localStorage.getItem(MOCK_USERS_KEY) || '[]');
-const saveMockUsers = (users) => localStorage.setItem(MOCK_USERS_KEY, JSON.stringify(users));
-
-const getMockTransactions = () => {
-  const stored = localStorage.getItem(MOCK_TRANSACTIONS_KEY);
-  if (stored) return JSON.parse(stored);
-  // seed with 10 demo transactions
-  const seed = Array.from({ length: 10 }, (_, i) => ({
-    id: i + 1,
-    time: Math.random() * 100000,
-    amount: parseFloat((Math.random() * 900 + 10).toFixed(2)),
-    is_fraud: Math.random() > 0.8,
-    fraud_probability: parseFloat((Math.random()).toFixed(4)),
-    created_at: new Date(Date.now() - Math.random() * 7 * 86400000).toISOString(),
-  }));
-  localStorage.setItem(MOCK_TRANSACTIONS_KEY, JSON.stringify(seed));
-  return seed;
+/** Human-readable message from any API error (FastAPI 422s return a list of issues). */
+export const errorMessage = (err, fallback = 'Something went wrong') => {
+  if (!err?.response) return 'Cannot reach the API. Is the backend running on port 8000?';
+  const detail = err.response.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail) && detail.length) {
+    return detail.map((d) => `${(d.loc || []).slice(1).join('.') || 'request'}: ${d.msg}`).join('; ');
+  }
+  return fallback;
 };
-
-const saveMockTransactions = (txns) =>
-  localStorage.setItem(MOCK_TRANSACTIONS_KEY, JSON.stringify(txns));
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
-
-export const login = async (username, password) => {
-  try {
-    const formData = new URLSearchParams();
-    formData.append('username', username);
-    formData.append('password', password);
-    const res = await api.post('/auth/login', formData, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    });
-    return res;
-  } catch (err) {
-    // fallback to mock
-    if (!err.response) {
-      const users = getMockUsers();
-      const user = users.find((u) => u.email === username && u.password === password);
-      if (!user) {
-        const e = new Error('Invalid credentials');
-        e.response = { data: { detail: 'Invalid email or password.' } };
-        throw e;
-      }
-      return { data: { access_token: `mock_token_${user.email}`, token_type: 'bearer' } };
-    }
-    throw err;
-  }
+export const login = (username, password) => {
+  const form = new URLSearchParams({ username, password });
+  return api.post('/auth/login', form, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
 };
-
-export const register = async (data) => {
-  try {
-    const res = await api.post('/auth/register', data);
-    return res;
-  } catch (err) {
-    // fallback to mock when backend is down (network error, not a 4xx)
-    if (!err.response) {
-      const users = getMockUsers();
-      if (users.find((u) => u.email === data.email)) {
-        const e = new Error('Email already registered');
-        e.response = { data: { detail: 'Email already registered.' } };
-        throw e;
-      }
-      users.push({ email: data.email, password: data.password, full_name: data.full_name });
-      saveMockUsers(users);
-      return { data: { message: 'Registered (demo mode)' } };
-    }
-    throw err;
-  }
-};
-
+export const register = (data) => api.post('/auth/register', data);
 export const getMe = () => api.get('/auth/me');
 
-// ─── Transactions ─────────────────────────────────────────────────────────────
+export const DEMO_ACCOUNT = { email: 'demo@fraudx.dev', password: 'demo1234' };
 
-export const getTransactions = async (skip = 0, limit = 100) => {
-  try {
-    return await api.get(`/transactions/?skip=${skip}&limit=${limit}`);
-  } catch {
-    return { data: getMockTransactions() };
-  }
-};
+// ─── Scoring ─────────────────────────────────────────────────────────────────
+/** Score without saving. `features` uses time, v1..v28, amount keys. */
+export const predictFraud = (features, explain = true) => api.post('/predict', features, { params: { explain } });
+export const getModelInfo = () => api.get('/predict/model-info');
+/** A real row from the held-out test set: label = 'fraud' | 'legit'. */
+export const getSampleTransaction = (label) => api.get('/predict/sample', { params: { label } });
 
-export const createTransaction = async (data) => {
-  try {
-    return await api.post('/transactions/', data);
-  } catch {
-    const txns = getMockTransactions();
-    const isFraud = Math.random() > 0.8;
-    const newTx = {
-      id: txns.length + 1,
-      time: data.time,
-      amount: parseFloat(data.amount.toFixed(2)),
-      is_fraud: isFraud,
-      fraud_probability: parseFloat((isFraud ? 0.7 + Math.random() * 0.29 : Math.random() * 0.3).toFixed(4)),
-      created_at: new Date().toISOString(),
-    };
-    txns.unshift(newTx);
-    saveMockTransactions(txns);
-    return { data: newTx };
-  }
-};
+// ─── Transactions ────────────────────────────────────────────────────────────
+export const getTransactions = (skip = 0, limit = 200) => api.get('/transactions/', { params: { skip, limit } });
+export const getTransaction = (id) => api.get(`/transactions/${id}`);
+export const createTransaction = (features) => api.post('/transactions/', features);
+export const simulateTransactions = (count, fraudRatio) =>
+  api.post('/transactions/simulate', { count, fraud_ratio: fraudRatio });
+export const reviewTransaction = (id, label, notes) => api.post(`/transactions/${id}/review`, { label, notes });
+export const clearTransactions = () => api.delete('/transactions/', { params: { confirm: true } });
 
-export const predictFraud = (data) => api.post('/transactions/predict', data);
+// ─── Analytics ───────────────────────────────────────────────────────────────
+export const getAnalytics = () => api.get('/analytics/');
+export const getTimeseries = (bucket = 'hour', points = 24) => api.get('/analytics/timeseries', { params: { bucket, points } });
+export const getDrivers = (limit = 8) => api.get('/analytics/drivers', { params: { limit } });
+export const getMetrics = () => api.get('/analytics/metrics');
+export const getThresholdCurve = () => api.get('/analytics/threshold-curve');
+export const getValidationReport = () => api.get('/analytics/validation');
+export const getHealth = () => api.get('/health');
 
-// ─── Analytics ────────────────────────────────────────────────────────────────
-
-export const getAnalytics = async () => {
-  try {
-    return await api.get('/analytics/');
-  } catch {
-    const txns = getMockTransactions();
-    const fraud = txns.filter((t) => t.is_fraud).length;
-    return {
-      data: {
-        total_transactions: txns.length,
-        fraud_transactions: fraud,
-        legitimate_transactions: txns.length - fraud,
-        fraud_percentage: txns.length ? (fraud / txns.length) * 100 : 0,
-      },
-    };
-  }
-};
-
-export const getMetrics = async () => {
-  try {
-    return await api.get('/analytics/metrics');
-  } catch {
-    return {
-      data: {
-        'Random Forest': {
-          accuracy: 0.9934,
-          precision: 0.9712,
-          recall: 0.8645,
-          f1_score: 0.9148,
-          roc_auc: 0.9821,
-        },
-      },
-    };
-  }
-};
+/** Server-Sent Events URL for the live feed (EventSource can't send headers). */
+export const streamUrl = () => `${API_URL}/stream?token=${encodeURIComponent(localStorage.getItem('token') || '')}`;
 
 export default api;

@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+.pytest_cache/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Data: the real dataset is ~150 MB (download with dataset/download_creditcard.py)
+dataset/creditcard.csv
+
+# Local env overrides
+frontend/.env.local

@@ -1,17 +1,34 @@
-import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, ListOrdered, LogOut, ShieldCheck, Bell, Settings, ChevronRight, Zap, Sun, Moon } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { NavLink, Link, useNavigate, useLocation } from 'react-router-dom';
+import { LayoutDashboard, ListOrdered, LogOut, ShieldCheck, Bell, ChevronRight, Zap, Sun, Moon, BrainCircuit } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
+import { getMe, getAnalytics, getHealth } from '../services/api';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/transactions', icon: ListOrdered, label: 'Transactions' },
-  { to: '/predict', icon: Zap, label: 'Live Analyzer', badge: 'NEW' },
+  { to: '/predict', icon: Zap, label: 'Live Analyzer' },
+  { to: '/model', icon: BrainCircuit, label: 'Model & Validation' },
 ];
 
 const Sidebar = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { toggle, isDark } = useTheme();
+  const [me, setMe] = useState(null);
+  const [pending, setPending] = useState(0);
+  const [modelOk, setModelOk] = useState(null);
+
+  useEffect(() => {
+    getMe().then(({ data }) => setMe(data)).catch(() => {});
+    const poll = () => {
+      getAnalytics().then(({ data }) => setPending(data.review.pending)).catch(() => {});
+      getHealth().then(({ data }) => setModelOk(data.model.loaded)).catch(() => setModelOk(false));
+    };
+    poll();
+    const t = setInterval(poll, 20000);
+    return () => clearInterval(t);
+  }, []);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -21,7 +38,7 @@ const Sidebar = () => {
   const isActive = (to) => to === '/' ? location.pathname === '/' : location.pathname.startsWith(to);
 
   return (
-    <aside style={{
+    <aside className="sidebar-dark" style={{
       width: '240px', flexShrink: 0,
       background: 'var(--bg-1)', borderRight: '1px solid var(--border)',
       display: 'flex', flexDirection: 'column', height: '100vh',
@@ -62,12 +79,15 @@ const Sidebar = () => {
         {/* System Active */}
         <div style={{
           marginTop: '12px', display: 'flex', alignItems: 'center', gap: '6px',
-          background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.18)',
+          background: modelOk === false ? 'rgba(244,63,94,0.10)' : 'rgba(16,185,129,0.07)',
+          border: `1px solid ${modelOk === false ? 'rgba(244,63,94,0.3)' : 'rgba(16,185,129,0.18)'}`,
           borderRadius: '8px', padding: '5px 10px',
         }}>
-          <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981', display: 'block', animation: 'pulseDot 2s infinite' }} />
-          <span style={{ fontSize: '11px', color: '#34d399', fontWeight: '600' }}>System Active</span>
-          <span style={{ marginLeft: 'auto', fontSize: '10px', color: 'var(--text-3)' }}>v2.1</span>
+          <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: modelOk === false ? '#f43f5e' : '#10b981', display: 'block', animation: modelOk ? 'pulseDot 2s infinite' : 'none' }} />
+          <span style={{ fontSize: '11px', color: modelOk === false ? '#fb7185' : '#34d399', fontWeight: '600' }}>
+            {modelOk == null ? 'Connecting…' : modelOk ? 'Model online' : 'Model offline'}
+          </span>
+          <span style={{ marginLeft: 'auto', fontSize: '10px', color: 'var(--text-3)' }}>v3.0</span>
         </div>
       </div>
 
@@ -101,29 +121,24 @@ const Sidebar = () => {
         <div style={{ margin: '12px 0 6px', height: '1px', background: 'var(--border)' }} />
         <p style={{ fontSize: '10px', color: 'var(--text-3)', fontWeight: '700', letterSpacing: '1px', padding: '0 8px', marginBottom: '4px', textTransform: 'uppercase' }}>System</p>
 
-        {[
-          { icon: Bell, label: 'Alerts', badge: '3', badgeColor: '#f43f5e' },
-          { icon: Settings, label: 'Settings' },
-        ].map(({ icon: Icon, label, badge: b, badgeColor }) => (
-          <div key={label} style={{
-            display: 'flex', alignItems: 'center', gap: '9px',
-            padding: '9px 11px', borderRadius: '10px', fontSize: '13px', fontWeight: '500',
-            color: 'var(--text-2)', cursor: 'default',
-          }}>
-            <Icon size={16} style={{ color: 'var(--text-3)' }} />
-            <span style={{ flex: 1 }}>{label}</span>
-            {b && <span style={{ fontSize: '10px', fontWeight: '700', background: badgeColor, color: 'white', borderRadius: '99px', padding: '1px 6px' }}>{b}</span>}
-          </div>
-        ))}
+        <Link to="/transactions?filter=pending" style={{
+          display: 'flex', alignItems: 'center', gap: '9px',
+          padding: '9px 11px', borderRadius: '10px', fontSize: '13px', fontWeight: '500',
+          color: 'var(--text-2)', textDecoration: 'none',
+        }}>
+          <Bell size={16} style={{ color: 'var(--text-3)' }} />
+          <span style={{ flex: 1 }}>Review queue</span>
+          {pending > 0 && <span style={{ fontSize: '10px', fontWeight: '700', background: '#f43f5e', color: 'white', borderRadius: '99px', padding: '1px 7px' }}>{pending}</span>}
+        </Link>
       </nav>
 
       {/* User */}
       <div style={{ padding: '10px', borderTop: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '10px 10px', borderRadius: '10px', marginBottom: '3px', background: 'var(--bg-input)' }}>
-          <div style={{ width: '30px', height: '30px', borderRadius: '8px', flexShrink: 0, background: 'linear-gradient(135deg,#6366f1,#a855f7)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '700', color: 'white' }}>A</div>
+          <div style={{ width: '30px', height: '30px', borderRadius: '8px', flexShrink: 0, background: 'linear-gradient(135deg,#6366f1,#a855f7)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '700', color: 'white' }}>{(me?.full_name || me?.email || 'A').charAt(0).toUpperCase()}</div>
           <div style={{ overflow: 'hidden', flex: 1 }}>
-            <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Analyst</div>
-            <div style={{ fontSize: '10px', color: 'var(--text-3)' }}>Fraud Analyst</div>
+            <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{me?.full_name || 'Analyst'}</div>
+            <div style={{ fontSize: '10px', color: 'var(--text-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{me?.email || 'Fraud Analyst'}</div>
           </div>
         </div>
         <button onClick={handleLogout}

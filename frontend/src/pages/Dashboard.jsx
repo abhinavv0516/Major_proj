@@ -1,329 +1,224 @@
-import { useEffect, useState, useCallback } from 'react';
-import { getAnalytics, getMetrics, getTransactions } from '../services/api';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ShieldAlert, ShieldCheck, Activity, Database, TrendingUp, TrendingDown,
-  RefreshCw, Clock, Zap, AlertTriangle, BarChart2, Target, Award
+  Activity, ShieldAlert, DollarSign, ClipboardCheck, Gauge, RefreshCw, FlaskConical, Radio,
+  LayoutDashboard, Inbox, Target,
 } from 'lucide-react';
 import {
-  PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, BarChart, Bar, RadialBarChart, RadialBar, Legend
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend,
 } from 'recharts';
+import { getAnalytics, getTimeseries, getTransactions, errorMessage } from '../services/api';
+import { useToast } from '../context/ToastContext';
+import useLiveFeed from '../hooks/useLiveFeed';
+import SimulateModal from '../components/SimulateModal';
+import TransactionDrawer from '../components/TransactionDrawer';
+import { PageHeader, Card, Stat, RiskBadge, ProbBar, ErrorBanner, Empty, Loading } from '../components/ui';
+import { COLORS, RISK, AXIS_TICK, GRID_STROKE, TOOLTIP_STYLE, num, money, pct, timeAgo } from '../utils/format';
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-const fmt = (n) => n?.toLocaleString() ?? '—';
-const pct = (n) => n != null ? `${Number(n).toFixed(2)}%` : '—';
+const BUCKETS = { minute: { points: 30, fmt: { hour: '2-digit', minute: '2-digit' } }, hour: { points: 24, fmt: { hour: '2-digit' } }, day: { points: 14, fmt: { month: 'short', day: 'numeric' } } };
 
-import GlassyCard from '../components/GlassyCard';
-
-const StatCard = ({ icon: Icon, label, value, sub, color, trend, trendVal }) => (
-  <GlassyCard style={{
-    background: 'var(--bg-card)', border: '1px solid var(--border)',
-    borderRadius: '16px', padding: '20px 22px',
-    backdropFilter: 'blur(12px)', position: 'relative', overflow: 'hidden',
-  }}>
-    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '3px', background: color, borderRadius: '16px 16px 0 0' }} />
-    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-      <div style={{ flex: 1 }}>
-        <p style={{ fontSize: '12px', color: 'var(--text-3)', fontWeight: '600', letterSpacing: '0.5px', textTransform: 'uppercase', marginBottom: '8px' }}>{label}</p>
-        <p style={{ fontSize: '30px', fontWeight: '800', color: 'var(--text-1)', lineHeight: 1, marginBottom: '6px' }}>{value}</p>
-        {sub && <p style={{ fontSize: '12px', color: 'var(--text-2)' }}>{sub}</p>}
-        {trendVal && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '6px' }}>
-            {trend === 'up' ? <TrendingUp size={13} color="#10b981" /> : <TrendingDown size={13} color="#f43f5e" />}
-            <span style={{ fontSize: '12px', color: trend === 'up' ? '#10b981' : '#f43f5e', fontWeight: '600' }}>{trendVal}</span>
-            <span style={{ fontSize: '11px', color: 'var(--text-3)' }}>vs last week</span>
-          </div>
-        )}
-      </div>
-      <div style={{
-        width: '44px', height: '44px', borderRadius: '12px', flexShrink: 0,
-        background: `${color}18`, border: `1px solid ${color}30`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <Icon size={20} color={color} />
-      </div>
-    </div>
-  </GlassyCard>
+const LiveDot = ({ on }) => (
+  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 11px', borderRadius: '99px', fontSize: '12px', fontWeight: 600, background: on ? 'var(--emerald-t)' : 'var(--bg-input)', color: on ? COLORS.emerald : 'var(--text-3)', border: `1px solid ${on ? 'rgba(16,185,129,0.3)' : 'var(--border)'}` }}>
+    <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: on ? COLORS.emerald : COLORS.slate, animation: on ? 'pulseDot 2s infinite' : 'none' }} />
+    {on ? 'Live' : 'Offline'}
+  </span>
 );
-
-const MetricBar = ({ label, value, color, description }) => (
-  <div>
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-      <div>
-        <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-1)' }}>{label}</span>
-        {description && <p style={{ fontSize: '11px', color: 'var(--text-3)', marginTop: '1px' }}>{description}</p>}
-      </div>
-      <span style={{ fontSize: '15px', fontWeight: '800', color }}>{pct(value * 100)}</span>
-    </div>
-    <div style={{ height: '6px', background: 'rgba(255,255,255,0.06)', borderRadius: '99px', overflow: 'hidden' }}>
-      <div style={{
-        height: '100%', width: `${value * 100}%`, borderRadius: '99px',
-        background: `linear-gradient(90deg, ${color}aa, ${color})`,
-        transition: 'width 1s cubic-bezier(0.4,0,0.2,1)',
-        boxShadow: `0 0 8px ${color}60`,
-      }} />
-    </div>
-  </div>
-);
-
-const COLORS_PIE = ['#10b981', '#f43f5e'];
-const CUSTOM_TOOLTIP_STYLE = {
-  background: '#1a2236', border: '1px solid rgba(255,255,255,0.1)',
-  borderRadius: '10px', padding: '10px 14px', color: '#f0f4ff', fontSize: '13px',
-};
 
 const Dashboard = () => {
-  const [analytics, setAnalytics] = useState(null);
-  const [metrics, setMetrics] = useState(null);
-  const [transactions, setTransactions] = useState([]);
+  const { addToast } = useToast();
+  const [summary, setSummary] = useState(null);
+  const [series, setSeries] = useState([]);
+  const [queue, setQueue] = useState([]);
+  const [bucket, setBucket] = useState('minute');
+  const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [lastRefresh, setLastRefresh] = useState(new Date());
   const [refreshing, setRefreshing] = useState(false);
+  const [simOpen, setSimOpen] = useState(false);
+  const [openId, setOpenId] = useState(null);
+  const refreshTimer = useRef(null);
 
-  const fetchData = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     try {
-      const [aRes, mRes, tRes] = await Promise.all([getAnalytics(), getMetrics(), getTransactions(0, 50)]);
-      setAnalytics(aRes.data);
-      setMetrics(mRes.data);
-      setTransactions(tRes.data || []);
-      setLastRefresh(new Date());
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); setRefreshing(false); }
-  }, []);
+      const [a, t, q] = await Promise.all([
+        getAnalytics(),
+        getTimeseries(bucket, BUCKETS[bucket].points),
+        getTransactions(0, 200),
+      ]);
+      setSummary(a.data);
+      setSeries(t.data);
+      setQueue(q.data.filter((x) => x.is_fraud && !x.review_status).slice(0, 6));
+      setError('');
+    } catch (err) {
+      setError(errorMessage(err, 'Could not load dashboard data'));
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [bucket]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  const handleRefresh = () => { setRefreshing(true); fetchData(); };
+  // Live feed: refresh aggregates at most every 1.5s while events stream in.
+  const onEvent = useCallback((tx) => {
+    if (tx.is_fraud && tx.risk_level === 'high' && tx.source !== 'simulation') {
+      addToast(`High-risk transaction #${tx.id} · ${money(tx.amount)} · ${pct(tx.fraud_probability)}`, 'fraud', 6000);
+    }
+    clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(fetchAll, 1500);
+  }, [addToast, fetchAll]);
+  useEffect(() => () => clearTimeout(refreshTimer.current), []);
+  const { events, connected } = useLiveFeed({ max: 12, onEvent });
 
-  // Build daily bar chart data from transactions
-  const dailyData = (() => {
-    const map = {};
-    transactions.forEach(t => {
-      const d = new Date(t.created_at);
-      const key = `${d.getMonth() + 1}/${d.getDate()}`;
-      if (!map[key]) map[key] = { date: key, legit: 0, fraud: 0 };
-      t.is_fraud ? map[key].fraud++ : map[key].legit++;
-    });
-    return Object.values(map).slice(-7);
-  })();
-
-  // Amount distribution for area chart
-  const amountData = [...transactions]
-    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-    .slice(-20)
-    .map((t, i) => ({ i: i + 1, amount: t.amount, fraud: t.is_fraud ? t.amount : 0 }));
-
-  const pieData = analytics ? [
-    { name: 'Legitimate', value: analytics.legitimate_transactions },
-    { name: 'Fraudulent', value: analytics.fraud_transactions },
-  ] : [];
-
-  const rf = metrics?.['Random Forest'];
-  const recentFraud = transactions.filter(t => t.is_fraud).slice(0, 5);
-
-  if (loading) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', flexDirection: 'column', gap: '16px' }}>
-      <div style={{ width: '40px', height: '40px', border: '3px solid rgba(99,102,241,0.2)', borderTop: '3px solid #6366f1', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-      <p style={{ color: 'var(--text-3)', fontSize: '14px' }}>Loading dashboard…</p>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  );
+  const s = summary;
+  const total = s?.total_transactions ?? 0;
+  const riskData = s ? Object.entries(s.risk_counts).map(([k, v]) => ({ name: RISK[k].label, value: v, color: RISK[k].color })) : [];
+  const perf = s?.live_performance;
+  const chartData = series.map((p) => ({ ...p, label: new Date(p.bucket).toLocaleString([], BUCKETS[bucket].fmt) }));
 
   return (
-    <div style={{ padding: '28px 32px', minHeight: '100%', background: 'var(--bg-base)' }}>
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes fadeUp { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
-        .dash-section { animation: fadeUp 0.4s ease both; }
-      `}</style>
+    <div className="page">
+      <PageHeader icon={LayoutDashboard} title="Operations Dashboard" subtitle="Live fraud scoring, alert queue and model performance on labelled traffic">
+        <LiveDot on={connected} />
+        <button className="btn" onClick={() => { setRefreshing(true); fetchAll(); }}>
+          <RefreshCw size={14} style={{ animation: refreshing ? 'spin .8s linear infinite' : 'none' }} /> Refresh
+        </button>
+        <button className="btn btn-primary" onClick={() => setSimOpen(true)}><FlaskConical size={15} /> Simulate traffic</button>
+      </PageHeader>
 
-      {/* Header */}
-      <div className="dash-section" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '28px' }}>
-        <div>
-          <h1 style={{ fontSize: '24px', fontWeight: '800', color: 'var(--text-1)', letterSpacing: '-0.5px' }}>Dashboard Overview</h1>
-          <p style={{ fontSize: '13px', color: 'var(--text-3)', marginTop: '4px' }}>Real-time fraud analytics · AI model performance · Transaction monitoring</p>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '10px' }}>
-            <Clock size={13} color="var(--text-3)" />
-            <span style={{ fontSize: '12px', color: 'var(--text-3)' }}>{lastRefresh.toLocaleTimeString()}</span>
+      {error && <ErrorBanner message={error} onRetry={fetchAll} />}
+      {loading ? <Loading label="Loading dashboard…" /> : s && (
+        <>
+          <div className="grid-kpi fade-up" style={{ marginBottom: '18px' }}>
+            <Stat icon={Activity} label="Transactions scored" value={num(total)} sub={s.errors ? `${s.errors} scoring errors` : 'each stored with its explanation'} color={COLORS.indigo} />
+            <Stat icon={ShieldAlert} label="Flagged as fraud" value={num(s.fraud_transactions)} sub={`${s.fraud_percentage.toFixed(2)}% of traffic`} color={COLORS.rose} />
+            <Stat icon={DollarSign} label="Amount at risk" value={money(s.amount_flagged)} sub={`of ${money(s.amount_total)} scored`} color={COLORS.amber} />
+            <Stat icon={ClipboardCheck} label="Awaiting review" value={num(s.review.pending)} sub={`${s.review.reviewed} reviewed so far`} color={COLORS.purple} />
+            <Stat icon={Gauge} label="Avg scoring time" value={s.avg_latency_ms != null ? `${s.avg_latency_ms.toFixed(1)} ms` : '—'} sub="model + SHAP per transaction" color={COLORS.cyan} />
           </div>
-          <button onClick={handleRefresh} style={{
-            display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px',
-            background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)',
-            borderRadius: '10px', color: '#818cf8', fontSize: '13px', fontWeight: '600', cursor: 'pointer',
-          }}>
-            <RefreshCw size={13} style={{ animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }} />
-            Refresh
-          </button>
-        </div>
-      </div>
 
-      {/* KPI Cards */}
-      <div className="dash-section" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px', animationDelay: '0.05s' }}>
-        <StatCard icon={Database} label="Total Transactions" value={fmt(analytics?.total_transactions)} sub="All time recorded" color="#6366f1" trend="up" trendVal="+12%" />
-        <StatCard icon={ShieldCheck} label="Legitimate" value={fmt(analytics?.legitimate_transactions)} sub={`${pct(100 - analytics?.fraud_percentage)} of total`} color="#10b981" trend="up" trendVal="+8%" />
-        <StatCard icon={ShieldAlert} label="Fraud Detected" value={fmt(analytics?.fraud_transactions)} sub="Flagged by AI model" color="#f43f5e" trend="down" trendVal="-3%" />
-        <StatCard icon={Activity} label="Fraud Rate" value={pct(analytics?.fraud_percentage)} sub="Current period" color="#f59e0b" trend="down" trendVal="-1.2%" />
-      </div>
-
-      {/* Row 2: Area Chart + Pie + Alert */}
-      <div className="dash-section" style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: '16px', marginBottom: '24px', animationDelay: '0.1s' }}>
-        {/* Amount over time */}
-        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '16px', padding: '22px', backdropFilter: 'blur(12px)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-            <div>
-              <h2 style={{ fontSize: '15px', fontWeight: '700', color: 'var(--text-1)' }}>Transaction Amount Flow</h2>
-              <p style={{ fontSize: '12px', color: 'var(--text-3)', marginTop: '2px' }}>Last 20 transactions · Fraud amounts highlighted</p>
-            </div>
-            <div style={{ display: 'flex', gap: '12px', fontSize: '12px' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '5px', color: 'var(--text-2)' }}><span style={{ width: '8px', height: '8px', borderRadius: '2px', background: '#6366f1', display: 'block' }} />Legit</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '5px', color: 'var(--text-2)' }}><span style={{ width: '8px', height: '8px', borderRadius: '2px', background: '#f43f5e', display: 'block' }} />Fraud</span>
-            </div>
-          </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <AreaChart data={amountData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-              <defs>
-                <linearGradient id="gradLegit" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="gradFraud" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.4} />
-                  <stop offset="95%" stopColor="#f43f5e" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-              <XAxis dataKey="i" tick={{ fill: '#475569', fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: '#475569', fontSize: 11 }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={CUSTOM_TOOLTIP_STYLE} formatter={(v) => [`$${v.toFixed(2)}`]} />
-              <Area type="monotone" dataKey="amount" stroke="#6366f1" strokeWidth={2} fill="url(#gradLegit)" />
-              <Area type="monotone" dataKey="fraud" stroke="#f43f5e" strokeWidth={2} fill="url(#gradFraud)" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* Pie */}
-        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '16px', padding: '22px', backdropFilter: 'blur(12px)', display: 'flex', flexDirection: 'column' }}>
-          <h2 style={{ fontSize: '15px', fontWeight: '700', color: 'var(--text-1)', marginBottom: '4px' }}>Distribution</h2>
-          <p style={{ fontSize: '12px', color: 'var(--text-3)', marginBottom: '8px' }}>Legit vs Fraudulent split</p>
-          <div style={{ flex: 1 }}>
-            <ResponsiveContainer width="100%" height={160}>
-              <PieChart>
-                <Pie data={pieData} cx="50%" cy="50%" innerRadius={48} outerRadius={72} paddingAngle={4} dataKey="value" strokeWidth={0}>
-                  {pieData.map((_, i) => <Cell key={i} fill={COLORS_PIE[i]} />)}
-                </Pie>
-                <Tooltip contentStyle={CUSTOM_TOOLTIP_STYLE} />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {pieData.map((d, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--text-2)' }}>
-                  <span style={{ width: '8px', height: '8px', borderRadius: '2px', background: COLORS_PIE[i], display: 'block' }} />
-                  {d.name}
-                </span>
-                <span style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-1)' }}>{fmt(d.value)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Row 3: Bar chart + Model Metrics + Recent Fraud */}
-      <div className="dash-section" style={{ display: 'grid', gridTemplateColumns: '1fr 320px 280px', gap: '16px', animationDelay: '0.15s' }}>
-        {/* Daily bar */}
-        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '16px', padding: '22px', backdropFilter: 'blur(12px)' }}>
-          <div style={{ marginBottom: '20px' }}>
-            <h2 style={{ fontSize: '15px', fontWeight: '700', color: 'var(--text-1)' }}>Daily Transaction Breakdown</h2>
-            <p style={{ fontSize: '12px', color: 'var(--text-3)', marginTop: '2px' }}>Legitimate vs Fraud per day</p>
-          </div>
-          {dailyData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={dailyData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                <XAxis dataKey="date" tick={{ fill: '#475569', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: '#475569', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={CUSTOM_TOOLTIP_STYLE} />
-                <Bar dataKey="legit" name="Legitimate" fill="#6366f1" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="fraud" name="Fraud" fill="#f43f5e" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <div style={{ height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-3)', fontSize: '13px' }}>
-              No daily data yet — simulate some transactions
-            </div>
+          {total === 0 && (
+            <Card style={{ marginBottom: '18px' }}>
+              <Empty icon={FlaskConical} title="No transactions yet">
+                Click <b>Simulate traffic</b> to replay real held-out transactions through the model,
+                or score one by hand on the Live Analyzer page.
+              </Empty>
+            </Card>
           )}
-        </div>
 
-        {/* Model Metrics */}
-        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '16px', padding: '22px', backdropFilter: 'blur(12px)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-            <div style={{ width: '28px', height: '28px', borderRadius: '8px', background: 'rgba(168,85,247,0.15)', border: '1px solid rgba(168,85,247,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Target size={14} color="#a855f7" />
-            </div>
-            <h2 style={{ fontSize: '15px', fontWeight: '700', color: 'var(--text-1)' }}>Model Performance</h2>
-          </div>
-          <p style={{ fontSize: '12px', color: 'var(--text-3)', marginBottom: '18px' }}>Random Forest · Production model</p>
-          {rf ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <MetricBar label="Accuracy" value={rf.accuracy} color="#6366f1" description="Overall correct predictions" />
-              <MetricBar label="Precision" value={rf.precision} color="#10b981" description="True fraud / all flagged" />
-              <MetricBar label="Recall" value={rf.recall} color="#a855f7" description="Fraud caught / all fraud" />
-              <MetricBar label="F1 Score" value={rf.f1_score} color="#f59e0b" description="Precision–Recall balance" />
-              <MetricBar label="ROC-AUC" value={rf.roc_auc} color="#06b6d4" description="Discrimination ability" />
-            </div>
-          ) : (
-            <div style={{ color: 'var(--text-3)', fontSize: '13px', textAlign: 'center', padding: '24px 0' }}>No metrics available</div>
-          )}
-        </div>
-
-        {/* Recent Fraud Alerts */}
-        <div style={{ background: 'var(--bg-card)', border: '1px solid rgba(244,63,94,0.2)', borderRadius: '16px', padding: '22px', backdropFilter: 'blur(12px)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-            <div style={{ width: '28px', height: '28px', borderRadius: '8px', background: 'rgba(244,63,94,0.12)', border: '1px solid rgba(244,63,94,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <AlertTriangle size={14} color="#f43f5e" />
-            </div>
-            <h2 style={{ fontSize: '15px', fontWeight: '700', color: 'var(--text-1)' }}>Fraud Alerts</h2>
-          </div>
-          <p style={{ fontSize: '12px', color: 'var(--text-3)', marginBottom: '16px' }}>Most recent flagged transactions</p>
-          {recentFraud.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-3)', fontSize: '13px' }}>
-              <ShieldCheck size={28} color="#10b981" style={{ margin: '0 auto 8px' }} />
-              <p>No fraud detected</p>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {recentFraud.map((t) => (
-                <div key={t.id} style={{
-                  padding: '10px 12px', borderRadius: '10px',
-                  background: 'rgba(244,63,94,0.06)', border: '1px solid rgba(244,63,94,0.12)',
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '12px', color: 'var(--text-3)' }}>#{t.id}</span>
-                    <span style={{ fontSize: '11px', fontWeight: '700', color: '#f43f5e', background: 'rgba(244,63,94,0.15)', padding: '2px 7px', borderRadius: '99px' }}>
-                      {(t.fraud_probability * 100).toFixed(0)}% risk
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '16px', fontWeight: '700', color: 'var(--text-1)', marginTop: '2px' }}>${t.amount?.toFixed(2)}</div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-3)', marginTop: '2px' }}>{new Date(t.created_at).toLocaleString()}</div>
+          <div className="stack-md fade-up" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '16px', marginBottom: '16px' }}>
+            <Card title="Traffic" subtitle="Scored transactions per period"
+              action={(
+                <div className="seg">
+                  {Object.keys(BUCKETS).map((b) => <button key={b} className={b === bucket ? 'active' : ''} onClick={() => setBucket(b)}>{b}</button>)}
                 </div>
-              ))}
-            </div>
-          )}
+              )}>
+              <ResponsiveContainer width="100%" height={230}>
+                <BarChart data={chartData} margin={{ top: 4, right: 4, left: -22, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={GRID_STROKE} vertical={false} />
+                  <XAxis dataKey="label" tick={AXIS_TICK} axisLine={false} tickLine={false} minTickGap={16} />
+                  <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} allowDecimals={false} />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} cursor={{ fill: 'rgba(99,102,241,0.06)' }} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="legit" name="Legitimate" stackId="a" fill={COLORS.indigo} radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="flagged" name="Flagged" stackId="a" fill={COLORS.rose} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </Card>
 
-          {/* Quick stats */}
-          <div style={{ marginTop: '14px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)' }}>
-            <div style={{ fontSize: '11px', color: 'var(--text-3)', marginBottom: '4px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Avg Fraud Amount</div>
-            <div style={{ fontSize: '18px', fontWeight: '800', color: '#f43f5e' }}>
-              ${transactions.filter(t => t.is_fraud).length > 0
-                ? (transactions.filter(t => t.is_fraud).reduce((s, t) => s + t.amount, 0) / transactions.filter(t => t.is_fraud).length).toFixed(2)
-                : '0.00'}
-            </div>
+            <Card title="Risk mix" subtitle="Share of scored traffic by risk band">
+              {total ? (
+                <ResponsiveContainer width="100%" height={230}>
+                  <PieChart>
+                    <Pie data={riskData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={82} paddingAngle={3} strokeWidth={0}>
+                      {riskData.map((d) => <Cell key={d.name} fill={d.color} />)}
+                    </Pie>
+                    <Tooltip contentStyle={TOOLTIP_STYLE} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : <Empty title="Nothing scored yet" />}
+            </Card>
           </div>
-        </div>
-      </div>
+
+          <div className="stack-md fade-up" style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1fr', gap: '16px' }}>
+            <Card title="Live feed" subtitle="Streamed from the API as transactions are scored"
+              action={<Radio size={16} color={connected ? COLORS.emerald : COLORS.slate} />}>
+              {events.length === 0 ? (
+                <Empty title="Waiting for transactions…">New scores appear here instantly.</Empty>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '330px', overflowY: 'auto' }}>
+                  {events.map((t) => (
+                    <button key={t.id} onClick={() => setOpenId(t.id)} className="fade-up" style={{
+                      display: 'grid', gridTemplateColumns: '54px 1fr auto', alignItems: 'center', gap: '10px', textAlign: 'left',
+                      padding: '9px 10px', borderRadius: '10px', cursor: 'pointer', border: '1px solid var(--border)',
+                      background: t.is_fraud ? 'var(--rose-t)' : 'var(--bg-input)',
+                    }}>
+                      <span className="mono" style={{ fontSize: '12px', color: 'var(--text-3)' }}>#{t.id}</span>
+                      <span>
+                        <span style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-1)' }}>{money(t.amount)}</span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-3)', marginLeft: '8px' }}>{t.source} · {timeAgo(t.submitted_at)}</span>
+                      </span>
+                      <ProbBar value={t.fraud_probability} level={t.risk_level} width={50} />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            <Card title="Review queue" subtitle="Flagged transactions waiting for an analyst" accent={COLORS.rose}>
+              {queue.length === 0 ? (
+                <Empty icon={Inbox} title="Queue is clear" />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {queue.map((t) => (
+                    <button key={t.id} onClick={() => setOpenId(t.id)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '10px 12px', borderRadius: '10px', cursor: 'pointer', background: 'var(--bg-input)', border: '1px solid var(--border)', textAlign: 'left' }}>
+                      <span>
+                        <span style={{ display: 'block', fontSize: '14px', fontWeight: 700, color: 'var(--text-1)' }}>{money(t.amount)}</span>
+                        <span className="mono" style={{ fontSize: '11px', color: 'var(--text-3)' }}>#{t.id} · {pct(t.fraud_probability)}</span>
+                      </span>
+                      <RiskBadge level={t.risk_level} />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            <Card title="Detection on labelled traffic" subtitle="Model vs. truth (simulation labels + analyst reviews)"
+              action={<Target size={16} color={COLORS.purple} />}>
+              {perf && perf.labelled ? (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '14px' }}>
+                    {[
+                      ['Caught', perf.tp, COLORS.emerald], ['Missed', perf.fn, COLORS.rose],
+                      ['False alarms', perf.fp, COLORS.amber], ['Correct passes', perf.tn, COLORS.slate],
+                    ].map(([k, v, c]) => (
+                      <div key={k} style={{ padding: '10px', borderRadius: '10px', background: `${c}12`, border: `1px solid ${c}30` }}>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: c }}>{num(v)}</div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-3)', fontWeight: 600 }}>{k}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {[['Recall (fraud caught)', perf.recall, COLORS.purple], ['Precision (alerts that were fraud)', perf.precision, COLORS.emerald], ['Accuracy', perf.accuracy, COLORS.indigo]].map(([k, v, c]) => (
+                    <div key={k} style={{ marginBottom: '9px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
+                        <span style={{ color: 'var(--text-2)' }}>{k}</span><b style={{ color: c }}>{pct(v)}</b>
+                      </div>
+                      <div style={{ height: '5px', background: 'var(--bg-input)', borderRadius: '99px' }}>
+                        <div style={{ height: '100%', width: `${(v || 0) * 100}%`, background: c, borderRadius: '99px', transition: 'width .6s' }} />
+                      </div>
+                    </div>
+                  ))}
+                  <p style={{ fontSize: '11px', color: 'var(--text-3)' }}>{num(perf.labelled)} labelled transactions</p>
+                </>
+              ) : (
+                <Empty title="No labelled transactions yet">Simulated traffic carries true labels; analyst reviews add more.</Empty>
+              )}
+            </Card>
+          </div>
+        </>
+      )}
+
+      <SimulateModal open={simOpen} onClose={() => setSimOpen(false)} onDone={fetchAll} />
+      <TransactionDrawer id={openId} onClose={() => setOpenId(null)} onReviewed={fetchAll} />
     </div>
   );
 };

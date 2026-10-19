@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { register } from '../services/api';
-import { ShieldCheck, Mail, Lock, User, Eye, EyeOff, AlertCircle, CheckCircle2, Wifi, WifiOff } from 'lucide-react';
+import { register, errorMessage } from '../services/api';
+import { ShieldCheck, Mail, Lock, User, Eye, EyeOff, AlertCircle, CheckCircle2 } from 'lucide-react';
 
 const Register = () => {
   const [email, setEmail] = useState('');
@@ -13,7 +13,6 @@ const Register = () => {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
-  const [isDemoMode, setIsDemoMode] = useState(false);
   const navigate = useNavigate();
 
   const passwordStrength = (pwd) => {
@@ -46,13 +45,7 @@ const Register = () => {
       setSuccess('Account created! Redirecting to login...');
       setTimeout(() => navigate('/login'), 1800);
     } catch (err) {
-      if (!err.response) {
-        // Network error but mock handled it — shouldn't reach here
-        setError('Unable to connect. Please check if the server is running.');
-        setIsDemoMode(true);
-      } else {
-        setError(err.response?.data?.detail || 'Registration failed. Please try again.');
-      }
+      setError(errorMessage(err, 'Registration failed. Please try again.'));
     } finally {
       setLoading(false);
     }
@@ -120,28 +113,6 @@ const Register = () => {
         position: 'relative',
         zIndex: 10,
       }}>
-        {/* Demo mode badge */}
-        {isDemoMode && (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: '6px',
-            position: 'absolute', top: '16px', right: '16px',
-            background: 'rgba(234,179,8,0.15)', border: '1px solid rgba(234,179,8,0.3)',
-            borderRadius: '99px', padding: '4px 10px', fontSize: '12px', color: '#fbbf24',
-          }}>
-            <WifiOff size={12} /> Demo Mode
-          </div>
-        )}
-        {!isDemoMode && (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: '6px',
-            position: 'absolute', top: '16px', right: '16px',
-            background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)',
-            borderRadius: '99px', padding: '4px 10px', fontSize: '12px', color: '#34d399',
-          }}>
-            <Wifi size={12} /> Live Mode
-          </div>
-        )}
-
         {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: '32px' }}>
           <div style={{
@@ -320,7 +291,7 @@ const Register = () => {
           border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px', textAlign: 'center',
         }}>
           <p style={{ fontSize: '11px', color: '#475569', margin: 0, lineHeight: '1.6' }}>
-            🔒 If the backend is offline, accounts are saved locally in Demo Mode and will work for this session.
+            🔒 Passwords are hashed with bcrypt. Accounts are stored by the FraudX API.
           </p>
         </div>
 

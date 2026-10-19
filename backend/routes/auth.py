@@ -20,7 +20,7 @@ async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
         email=user.email,
         hashed_password=hashed_password,
         full_name=user.full_name,
-        role=user.role
+        role="analyst",  # never trust a client-supplied role
     )
     db.add(new_user)
     await db.commit()

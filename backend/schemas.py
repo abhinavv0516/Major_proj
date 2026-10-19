@@ -74,6 +74,32 @@ class PredictionResponse(BaseModel):
     inference_ms: float
 
 
+MAX_BATCH = 5000
+
+
+class BatchPredictRequest(BaseModel):
+    transactions: List[TransactionFeatures] = Field(..., min_length=1, max_length=MAX_BATCH)
+    explain: bool = False
+
+
+class BatchPredictItem(BaseModel):
+    index: int
+    fraud_probability: float
+    is_fraud: bool
+    risk_level: Literal["low", "medium", "high"]
+    top_features: Dict[str, float] = {}
+
+
+class BatchPredictResponse(BaseModel):
+    model_version: str
+    threshold: float
+    count: int
+    flagged: int
+    elapsed_ms: float
+    throughput_per_second: float
+    results: List[BatchPredictItem]
+
+
 class ModelInfoResponse(BaseModel):
     loaded: bool
     model_version: Optional[str] = None
@@ -83,11 +109,10 @@ class ModelInfoResponse(BaseModel):
     error: Optional[str] = None
 
 
-# We use Dict[str, Any] for raw payload
-class TransactionCreate(BaseModel):
-    payload: Dict[str, float]
+# ── Transactions ──────────────────────────────────────────────────────────────
 
 class TransactionResponse(BaseModel):
+    """Bare stored transaction (returned by the async/queued endpoint)."""
     id: int
     transaction_uuid: str
     submitted_at: datetime
@@ -96,32 +121,149 @@ class TransactionResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
-class ExplanationResponse(BaseModel):
-    top_features: Dict[str, float]
-    shap_values: Dict[str, float]
 
-    model_config = {"from_attributes": True}
+RiskLevel = Literal["low", "medium", "high"]
+Outcome = Literal["TP", "FP", "FN", "TN"]
 
-class ScoreResponse(BaseModel):
+
+class TransactionSummary(BaseModel):
+    """One row in tables, alerts and the live feed. Flattened for the frontend."""
     id: int
-    transaction_id: int
-    model_version: str
-    fraud_probability: float
-    risk_level: str
-    prediction: bool
-    processing_time: float
-    created_at: datetime
-    explanation: Optional[ExplanationResponse] = None
+    transaction_uuid: str
+    submitted_at: Optional[datetime] = None
+    status: str
+    amount: float
+    time: float
+    fraud_probability: Optional[float] = None
+    risk_level: Optional[RiskLevel] = None
+    is_fraud: Optional[bool] = None
+    model_version: Optional[str] = None
+    processing_ms: Optional[float] = None
+    top_features: Dict[str, float] = {}
+    review_status: Optional[Literal["fraud", "legit"]] = None
+    source: str = "api"
+    ground_truth: Optional[int] = None
+    outcome: Optional[Outcome] = None
 
-    model_config = {"from_attributes": True}
 
-class TransactionDetailResponse(TransactionResponse):
-    scores: List[ScoreResponse] = []
+class ReviewEntry(BaseModel):
+    id: int
+    review_status: str
+    review_notes: Optional[str] = None
+    reviewer: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
 
-    model_config = {"from_attributes": True}
+
+class AuditEntry(BaseModel):
+    action: str
+    actor: Optional[str] = None
+    details: Dict[str, Any] = {}
+    created_at: Optional[datetime] = None
+
+
+class TransactionDetail(TransactionSummary):
+    features: Dict[str, float]
+    shap_values: Dict[str, float] = {}
+    reviews: List[ReviewEntry] = []
+    audit_trail: List[AuditEntry] = []
+
+
+class SimulationRequest(BaseModel):
+    count: int = Field(10, ge=1, le=100, description="How many transactions to replay")
+    fraud_ratio: float = Field(0.1, ge=0, le=1, description="Chance each one is a known fraud case")
+
+
+class SimulationResponse(BaseModel):
+    created: int
+    flagged: int
+    actual_fraud: int
+    transactions: List[TransactionSummary]
+
+
+class ReviewRequest(BaseModel):
+    label: Literal["fraud", "legit"]
+    notes: Optional[str] = Field(None, max_length=1000)
+
+
+# ── Analytics ─────────────────────────────────────────────────────────────────
+
+class ReviewStats(BaseModel):
+    reviewed: int
+    pending: int
+    confirmed_fraud: int
+    false_positives: int
+    missed_fraud: int
+
+
+class LivePerformance(BaseModel):
+    labelled: int
+    tp: int
+    fp: int
+    fn: int
+    tn: int
+    accuracy: Optional[float] = None
+    precision: Optional[float] = None
+    recall: Optional[float] = None
+
 
 class AnalyticsResponse(BaseModel):
     total_transactions: int
     fraud_transactions: int
     legitimate_transactions: int
     fraud_percentage: float
+    risk_counts: Dict[str, int]
+    amount_total: float
+    amount_flagged: float
+    avg_fraud_probability: Optional[float] = None
+    avg_latency_ms: Optional[float] = None
+    errors: int
+    review: ReviewStats
+    live_performance: LivePerformance
+
+
+class TimeseriesPoint(BaseModel):
+    bucket: datetime
+    total: int
+    flagged: int
+    legit: int
+    amount: float
+    amount_flagged: float
+
+
+class FeatureDriver(BaseModel):
+    feature: str
+    mean_abs_shap: float
+    mean_abs_shap_flagged: float
+    mean_shap_flagged: float
+
+
+class ThresholdPoint(BaseModel):
+    threshold: float
+    precision: Optional[float] = None
+    recall: Optional[float] = None
+    f1: Optional[float] = None
+    flagged: int
+    tp: int
+    fp: int
+    fn: int
+    tn: int
+
+
+class ThresholdCurveResponse(BaseModel):
+    model_version: str
+    source: str
+    n_test: int
+    n_fraud: int
+    roc_auc: Optional[float] = None
+    pr_auc: Optional[float] = None
+    current_threshold: float
+    current: ThresholdPoint
+    best_f1_threshold: Optional[float] = None
+    points: List[ThresholdPoint]
+
+
+class ModelMetricsResponse(BaseModel):
+    model_version: Optional[str] = None
+    algorithm: str
+    metrics: Dict[str, float]
+    confusion_matrix: Optional[List[List[int]]] = None

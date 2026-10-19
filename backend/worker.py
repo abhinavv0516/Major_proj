@@ -1,107 +1,84 @@
+"""
+Redis Streams worker: scores transactions queued by POST /api/transactions/async.
+
+Run from the repo root:  python -m backend.worker
+"""
 import asyncio
 import json
-import time
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+import logging
+import os
+import socket
+
+from backend.database import AsyncSessionLocal, init_db
+from backend.ml_service import load_model
+from backend.models import Transaction
 from backend.redis_client import redis_client
-from backend.database import AsyncSessionLocal
-from backend.models import Transaction, Score, Explanation
-from backend.ml_service import predict_fraud
+from backend.services.events import publish_to_redis
+from backend.services.scoring import load_view, score_transaction
+from backend.services.views import event_payload
 
 STREAM_KEY = "transaction_stream"
 GROUP_NAME = "fraud_workers"
-CONSUMER_NAME = "worker_1"
+# Unique per process so several workers can share the consumer group (horizontal scaling):
+#   python -m backend.worker   (run it N times, or `docker compose up --scale worker=3`)
+CONSUMER_NAME = os.getenv("WORKER_NAME") or f"worker-{socket.gethostname()}-{os.getpid()}"
 
-async def process_message(db, message_id, payload_str):
-    try:
-        data = json.loads(payload_str)
-        transaction_id = data.get("transaction_id")
-        
-        # Fetch transaction
-        stmt = select(Transaction).filter(Transaction.id == transaction_id)
-        result = await db.execute(stmt)
-        transaction = result.scalars().first()
-        
-        if not transaction:
-            print(f"Transaction {transaction_id} not found")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("worker")
+
+
+async def process_message(payload_str: str) -> None:
+    data = json.loads(payload_str)
+    transaction_id = data.get("transaction_id")
+
+    async with AsyncSessionLocal() as db:
+        tx = await db.get(Transaction, transaction_id)
+        if tx is None:
+            logger.warning("Transaction %s not found", transaction_id)
             return
-            
-        if transaction.status != "queued":
-            print(f"Transaction {transaction_id} already processed (status: {transaction.status})")
+        if tx.status != "queued":
+            logger.info("Transaction %s already processed (status: %s)", transaction_id, tx.status)
             return
-            
-        start_time = time.time()
-        
-        # Predict
-        is_fraud, probability, risk_level, shap_dict, top_features = predict_fraud(transaction.raw_payload)
-        
-        processing_time = time.time() - start_time
-        
-        # Create Score and Explanation
-        db_score = Score(
-            transaction_id=transaction.id,
-            model_version="xgboost-v1",
-            fraud_probability=probability,
-            risk_level=risk_level,
-            prediction=is_fraud,
-            processing_time=processing_time
-        )
-        db.add(db_score)
-        await db.commit()
-        await db.refresh(db_score)
-        
-        db_explanation = Explanation(
-            score_id=db_score.id,
-            top_features=top_features,
-            shap_values=shap_dict
-        )
-        db.add(db_explanation)
-        
-        transaction.status = "scored"
-        await db.commit()
-        
-        print(f"Successfully processed transaction {transaction_id}")
-        
-    except Exception as e:
-        print(f"Error processing message {message_id}: {e}")
-        # In a real app, send to DLQ here
 
-async def main():
+        await score_transaction(db, tx)
+        view = await load_view(db, tx.id)
+        if view:
+            # The API process relays this channel to dashboard clients (SSE).
+            await publish_to_redis(redis_client, event_payload(view))
+        logger.info("Scored transaction %s", transaction_id)
+
+
+async def main() -> None:
+    await init_db()
+    if load_model() is None:
+        logger.error("Model failed to load; queued transactions will be marked as errors")
+
     try:
-        await redis_client.xgroup_create(STREAM_KEY, GROUP_NAME, mkstream=True)
-    except Exception as e:
-        if "BUSYGROUP Consumer Group name already exists" not in str(e):
-            print(f"Error creating consumer group: {e}")
+        await redis_client.xgroup_create(STREAM_KEY, GROUP_NAME, id="0", mkstream=True)
+    except Exception as e:  # noqa: BLE001
+        if "BUSYGROUP" not in str(e):
+            logger.error("Error creating consumer group: %s", e)
 
-    print(f"Worker {CONSUMER_NAME} started, listening to {STREAM_KEY}...")
+    logger.info("Worker %s listening on %s...", CONSUMER_NAME, STREAM_KEY)
 
     while True:
         try:
-            # Read from stream
             messages = await redis_client.xreadgroup(
-                GROUP_NAME,
-                CONSUMER_NAME,
-                {STREAM_KEY: ">"},
-                count=10,
-                block=5000
+                GROUP_NAME, CONSUMER_NAME, {STREAM_KEY: ">"}, count=10, block=5000
             )
-            
-            if not messages:
-                continue
-                
-            async with AsyncSessionLocal() as db:
-                for stream, stream_messages in messages:
-                    for message_id, message_data in stream_messages:
-                        payload_str = message_data.get("payload")
-                        if payload_str:
-                            await process_message(db, message_id, payload_str)
-                            
-                        # Acknowledge message
-                        await redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
-                        
-        except Exception as e:
-            print(f"Worker error: {e}")
+            for _stream, stream_messages in messages or []:
+                for message_id, message_data in stream_messages:
+                    payload_str = message_data.get("payload")
+                    if payload_str:
+                        try:
+                            await process_message(payload_str)
+                        except Exception:  # noqa: BLE001 - one bad message must not stop the worker
+                            logger.exception("Error processing message %s", message_id)
+                    await redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("Worker loop error; retrying in 5s")
             await asyncio.sleep(5)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

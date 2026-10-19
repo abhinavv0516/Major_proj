@@ -1,0 +1,8 @@
+**/__pycache__
+**/*.pyc
+**/node_modules
+frontend/dist
+ml-model/mlruns
+ml-model/mlflow.db
+*.db
+.git

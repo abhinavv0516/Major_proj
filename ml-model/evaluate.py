@@ -1,61 +1,54 @@
+"""
+Re-evaluate the saved model (scaler.pkl + xgboost_model.pkl) on a labelled CSV.
+
+    python ml-model/evaluate.py                       # the holdout saved by train.py
+    python ml-model/evaluate.py --data some_file.csv  # any CSV with Time, V1..V28, Amount, Class
+
+Uses the threshold from model_card.json (or 0.5). Writes evaluation_results.json.
+"""
+import argparse
+import json
+from pathlib import Path
+
 import joblib
 import pandas as pd
-import json
 
-def load_and_evaluate():
-    import os
-    data_path = os.path.join(os.path.dirname(__file__), '..', 'dataset', 'sample_creditcard.csv')
-    scaler_path = os.path.join(os.path.dirname(__file__), 'scaler.pkl')
-    model_path = os.path.join(os.path.dirname(__file__), 'random_forest_model.pkl')
-    eval_path = os.path.join(os.path.dirname(__file__), 'evaluation_results.json')
-    
-    # Load test data and models
-    print("Loading test data and models...")
-    df = pd.read_csv(data_path)
-    X = df.drop('Class', axis=1)
-    y = df['Class']
-    
-    # Simple split to just get some evaluation output 
-    # (in reality we should use the exact test set from training, but for demonstration we'll evaluate on the whole set or a sample)
-    scaler = joblib.load(scaler_path)
-    model = joblib.load(model_path)
-    
-    X_scaled = pd.DataFrame(scaler.transform(X), columns=X.columns)
-    
-    print("Making predictions...")
-    y_pred = model.predict(X_scaled)
-    
-    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
-    
-    y_prob = model.predict_proba(X_scaled)[:, 1]
-    
-    acc = accuracy_score(y, y_pred)
-    prec = precision_score(y, y_pred)
-    rec = recall_score(y, y_pred)
-    f1 = f1_score(y, y_pred)
-    roc = roc_auc_score(y, y_prob)
-    cm = confusion_matrix(y, y_pred).tolist()
-    
-    print(f"Final Evaluation Metrics:")
-    print(f"Accuracy: {acc:.4f}")
-    print(f"Precision: {prec:.4f}")
-    print(f"Recall: {rec:.4f}")
-    print(f"F1 Score: {f1:.4f}")
-    print(f"ROC-AUC: {roc:.4f}")
-    
+import validation as V
+
+ML_DIR = Path(__file__).resolve().parent
+FEATURES = ["Time", *[f"V{i}" for i in range(1, 29)], "Amount"]
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("--data", type=Path, default=ML_DIR / "holdout.csv.gz")
+    p.add_argument("--threshold", type=float, default=None)
+    args = p.parse_args()
+
+    if not args.data.exists():
+        raise SystemExit(f"{args.data} not found. Run python ml-model/train.py first, or pass --data.")
+
+    card_path = ML_DIR / "model_card.json"
+    card = json.loads(card_path.read_text()) if card_path.exists() else {}
+    threshold = args.threshold if args.threshold is not None else card.get("threshold", 0.5)
+
+    df = pd.read_csv(args.data)
+    scaler = joblib.load(ML_DIR / "scaler.pkl")
+    model = joblib.load(ML_DIR / "xgboost_model.pkl")
+    X = pd.DataFrame(scaler.transform(df[FEATURES]), columns=FEATURES)
+    probs = model.predict_proba(X)[:, 1]
+    y = df["Class"].astype(int).to_numpy()
+
     results = {
-        "accuracy": acc,
-        "precision": prec,
-        "recall": rec,
-        "f1_score": f1,
-        "roc_auc": roc,
-        "confusion_matrix": cm
+        "model_version": card.get("version", "unknown"),
+        "data": str(args.data),
+        "rows": len(df), "fraud": int(y.sum()),
+        **V.all_metrics(y, probs, threshold),
+        "cost": V.cost_analysis(y, probs, df["Amount"].to_numpy(), threshold),
     }
-    
-    with open(eval_path, 'w') as f:
-        json.dump(results, f, indent=4)
-        
-    print(f"Evaluation results saved to {eval_path}")
+    print(json.dumps(results, indent=2))
+    (ML_DIR / "evaluation_results.json").write_text(json.dumps(results, indent=2))
 
-if __name__ == '__main__':
-    load_and_evaluate()
+
+if __name__ == "__main__":
+    main()

@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { login } from '../services/api';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { login, errorMessage, DEMO_ACCOUNT } from '../services/api';
 import { ShieldCheck, Mail, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react';
 
 const Login = () => {
@@ -10,29 +10,30 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const expired = params.get('expired') === '1';
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
+  const signIn = async (user, pass) => {
     setLoading(true);
     setError('');
     try {
-      const res = await login(email, password);
+      const res = await login(user, pass);
       localStorage.setItem('token', res.data.access_token);
       navigate('/');
     } catch (err) {
-      setError(err.response?.data?.detail || 'Login failed. Please try again.');
+      setError(errorMessage(err, 'Login failed. Please try again.'));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDemoLogin = async () => {
-    setLoading(true);
-    setError('');
-    // Create a demo token and navigate
-    localStorage.setItem('token', 'demo_token_analyst@fraudx.demo');
-    navigate('/');
+  const handleLogin = (e) => {
+    e.preventDefault();
+    signIn(email, password);
   };
+
+  // Real account seeded by the backend on startup (SEED_DEMO_USER=true).
+  const handleDemoLogin = () => signIn(DEMO_ACCOUNT.email, DEMO_ACCOUNT.password);
 
   return (
     <div style={{
@@ -127,6 +128,14 @@ const Login = () => {
         </div>
 
         {/* Error */}
+        {expired && !error && (
+          <div style={{
+            background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.3)',
+            borderRadius: '12px', padding: '12px 14px', marginBottom: '20px', fontSize: '13px', color: '#c7d2fe',
+          }}>
+            Your session expired. Please sign in again.
+          </div>
+        )}
         {error && (
           <div className="error-shake" key={error} style={{
             display: 'flex', alignItems: 'flex-start', gap: '10px',
@@ -205,6 +214,9 @@ const Login = () => {
         <button className="demo-btn" onClick={handleDemoLogin} disabled={loading}>
           🚀 Continue with Demo Account
         </button>
+        <p style={{ marginTop: '8px', textAlign: 'center', fontSize: '11px', color: '#64748b' }}>
+          {DEMO_ACCOUNT.email} · {DEMO_ACCOUNT.password}
+        </p>
 
         <p style={{ marginTop: '24px', textAlign: 'center', fontSize: '14px', color: '#64748b' }}>
           Don't have an account?{' '}
