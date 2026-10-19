@@ -105,6 +105,12 @@ Selection uses cross-validation only. Random Forest happens to edge it on the ho
 inside the confidence interval; the tuned XGBoost is the most stable across folds, has far
 better ROC-AUC, and supports exact TreeSHAP explanations. Details: [docs/VALIDATION.md](docs/VALIDATION.md).
 
+**Throughput** (`scripts/load_test.py`, one Uvicorn worker on a laptop, SQLite, 1,000 requests at
+concurrency 25): **175 requests/s** for single predictions with SHAP explanations, p50 134 ms,
+p95 189 ms, 0 errors (latency is mostly queueing at that concurrency; the model itself takes ~6 ms).
+The batch endpoint scores **2,000 rows in 92 ms** round trip (~130k rows/s of model time).
+Add Uvicorn workers or Redis-queue workers to scale further.
+
 ## Tests
 
 ```bash
