@@ -2,8 +2,9 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 asyncpg
+aiosqlite
 alembic
-pydantic
+pydantic[email]
 pydantic-settings
 python-jose[cryptography]
 passlib[bcrypt]
@@ -14,6 +15,6 @@ numpy
 scikit-learn
 joblib
 xgboost
-shap
 mlflow
 redis
+pytest
